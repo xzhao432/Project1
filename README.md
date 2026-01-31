@@ -10,6 +10,67 @@ In this paper, we propose a novel visual decoding framework inspired by human pe
 
 ![1763477641384](image/README/1763477641384.png)
 
+## How to use
+
+1. Data Preparation
+
+Download the Things-image from the [OSF repository](https://osf.io/jum2f/files/osfstorage), Things-EEG from the [OSF repository](https://osf.io/anp5v/files/osfstorage).  We provided the processed Things-EEG data and the pretrained CLIP model weights on [Quark Netdisk](https://pan.quark.cn/s/3fe3136bfafb). If the processed data is downloaded, the following three processing steps (Data Preparation, EEG Data Process, and Image Data Process) can be skipped.
+
+Arrange the data according to the following directory:
+
+```
+data
+├── things_eeg
+│   ├── Image_set
+│   │   ├── train_images
+│   │   └── test_images
+│   └── Raw_eeg
+│       ├── sub-01
+│       ├── ...
+│       └── sub-10
+```
+
+2. EEG Data Process
+
+```bash
+# Setting the subject number 'sub' from 1 to 10 to process each subject's EEG data.
+python preprocess/process_eeg.py --subject sub
+```
+
+3. Image Data Process
+
+```bash
+# Making multi-blur clip features.
+python preprocess/process_image.py
+```
+
+After the above steps, the directory structure is as follows:
+
+```
+data
+├── things_eeg
+│   ├── Image_set
+│   │   ├── train_images
+│   │   └── test_images
+│   ├── Image_feature
+│   │   ├──MultiBlur_RN50_train.pt
+│   │   └──MultiBlur_RN50_test.pt
+│   └── Preprocessed_data
+│       ├── sub-01
+│       ├── ...
+│       └── sub-10
+```
+
+6. Run
+
+```bash
+python main_eeg.py
+```
+
+## Acknowledgement
+
+We extend our gratitude to the prior works [UBP](https://github.com/HaitaoWuTJU/Uncertainty-aware-Blur-Prior/tree/main) and [NICE-EEG](https://github.com/eeyhsong/NICE-EEG) for their pioneering contributions to this field.
+
 ## **Future Plans**
 
 More code update in progress...

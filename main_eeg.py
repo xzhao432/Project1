@@ -91,7 +91,7 @@ class Pair_dataset(Dataset):
     
     def __getitem__(self, index):
             x       = self.eeg_data[index][:,self.selected_period[0]:self.selected_period[1]].float()
-            x_key   = self.index_dict[index]
+            x_key   = self.index_dict[index].replace('\\','/')
   
             sample  = {
                 'eeg': x,
@@ -127,11 +127,18 @@ def get_dataset(base_path,sub,cross_sub,select_channels = ['P7', 'P5', 'P3', 'P1
      
    
     # load blurring img feature
-    train_blur_feature_path = os.path.join(base_path,'Image_feature','UniformBlur',"UniBlur_RN50_train.pt")
+    train_blur_feature_path = os.path.join(base_path,'Image_feature',"MultiBlur_RN50_train.pt")
     train_blur_feature = torch.load(train_blur_feature_path,weights_only=False)
 
-    test_blur_feature_path = os.path.join(base_path,'Image_feature','UniformBlur',"UniBlur_RN50_test.pt")
+    test_blur_feature_path = os.path.join(base_path,'Image_feature',"MultiBlur_RN50_test.pt")
     test_blur_feature = torch.load(test_blur_feature_path,weights_only=False)
+
+
+    # train_blur_feature_path = os.path.join(base_path,'Image_feature','UniformBlur',"UniBlur_RN50_train.pt")
+    # train_blur_feature = torch.load(train_blur_feature_path,weights_only=False)
+
+    # test_blur_feature_path = os.path.join(base_path,'Image_feature','UniformBlur',"UniBlur_RN50_test.pt")
+    # test_blur_feature = torch.load(test_blur_feature_path,weights_only=False)
 
     eeg_data = []
 
@@ -414,12 +421,11 @@ def train(params,logger):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--net_name', type=str, default = 'Brain_Visual_Encoder_EEG')
-    parser.add_argument('--net_name', type=str, default = 'EEGnet')
-    parser.add_argument('--epoch', type=int, default=50)
+    parser.add_argument('--net_name', type=str, default = 'Brain_Visual_Encoder_EEG')
+    parser.add_argument('--epoch', type=int, default=10)
     parser.add_argument('--train_batch_size', type=int, default=1024)
     parser.add_argument('--test_batch_size',  type=int, default=200)
-    parser.add_argument('--lr',    type=float, default=0.0001)
+    parser.add_argument('--lr',    type=float, default=0.001)
     parser.add_argument('--mixup', type=bool,  default=False)
 
     parser.add_argument('--blur_level', type=list, default   = ['l_1','l_3','l_9','l_15','l_21','l_27','l_33','l_39','l_45','l_51','l_57','l_63'])
@@ -444,10 +450,6 @@ if __name__ == "__main__":
         'low_freq':  args.low_freq,
         'high_freq': args.high_freq,
         'save_feature':args.save_feature,
-
-        # 'select_chs': [ 'P7', 'P5', 'P3', 'P1', 'Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8', 'O1', 'Oz', 'O2'],
-        # 'select_chs': [ 'P7', 'P5', 'P3', 'P1', 'Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8', 'O1', 'Oz', 'O2','TP7','TP9','TP8','TP10'],
-        
         'select_chs':['Fp1', 'Fp2', 'AF7', 'AF3', 'AFz', 'AF4', 'AF8', 'F7', 'F5', 'F3',
                         'F1', 'F2', 'F4', 'F6', 'F8', 'FT9', 'FT7', 'FC5', 'FC3', 'FC1', 
                         'FCz', 'FC2', 'FC4', 'FC6', 'FT8', 'FT10', 'T7', 'C5', 'C3', 'C1',
@@ -458,12 +460,13 @@ if __name__ == "__main__":
 
         'select_period': [0,250],
         'save_path':os.path.join(root_dir,'logs',os.path.basename(__file__),args.net_name,time.strftime('%Y-%m-%d-%H-%M')),
-        'data_path': r'/disks/SSD2/dataset/things-eeg/Preprocessed_data_250Hz_whiten',
+        'data_path': r'.\data\things-eeg',
+        # 'data_path': "D:\\Dataset\\things-eeg",
         'cross_subject':args.cross_subject
     }
     
-    if not os.path.exists(r'/disks/SSD2/dataset/things-eeg/Preprocessed_data_250Hz_whiten' ):
-        params['data_path'] = "D:\\Dataset\\things-eeg"
+    # if not os.path.exists(r'/disks/SSD2/dataset/things-eeg/Preprocessed_data_250Hz_whiten' ):
+    #     params['data_path'] = "D:\\Dataset\\things-eeg"
 
     if not os.path.exists(params['save_path']):
         os.makedirs(params['save_path'])
@@ -474,8 +477,9 @@ if __name__ == "__main__":
     logger = create_logger(params['save_path'])
     all_metrics = []
 
-    for sub in range(1,11):
+    for sub in range(1,3):
         for seed in range(21,22):
+            logger.info('Training subject {} with seed {}'.format(sub,seed))
             params['seed'] = seed
             params['sub'] = sub
             all_metrics.append(train(params,logger))

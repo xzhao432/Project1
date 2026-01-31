@@ -131,13 +131,12 @@ class Brain_Visual_Encoder_MEG(nn.Module):
         )
 
         self.learned_scale = nn.Parameter(torch.rand([1,50,proj_dim]),requires_grad = True)
- 
+        self.default_feature = nn.Parameter(torch.zeros([1,3,proj_dim]),requires_grad = True)
 
     def get_image_feature(self,imgs):
-  
+        imgs = torch.cat([imgs,self.default_feature.expand(imgs.shape[0],-1,-1)],1)
         rates = torch.softmax(self.learned_scale[:,:imgs.shape[1]],-2)
         img  = torch.sum(imgs * rates,1)
-  
         img = self.img_adapter(img)
         return img
 
