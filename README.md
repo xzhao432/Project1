@@ -74,3 +74,17 @@ We extend our gratitude to the prior works [UBP](https://github.com/HaitaoWuTJU/
 ## **Future Plans**
 
 More code update in progress...
+
+## Citation
+
+```
+@inproceedings{liu2026leveraging,
+  title={Leveraging Visual Blur Perception Characteristics for EEG Decoding},
+  author={Liu, Wenchao and Li, Hongwei and Xu, Zhouyang and Ma, Lin and Li, Haifeng},
+  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume={40},
+  number={21},
+  pages={17580--17588},
+  year={2026}
+}
+```
