@@ -14,7 +14,7 @@ In this paper, we propose a novel visual decoding framework inspired by human pe
 
 1. Data Preparation
 
-Download the Things-image from the [OSF repository](https://osf.io/jum2f/files/osfstorage), Things-EEG from the [OSF repository](https://osf.io/anp5v/files/osfstorage).  We provided the processed Things-EEG data and the pretrained CLIP model weights on [Quark Netdisk](https://pan.quark.cn/s/3fe3136bfafb). If the processed data is downloaded, the following three processing steps (Data Preparation, EEG Data Process, and Image Data Process) can be skipped.
+Download the Things-image from the [OSF repository](https://osf.io/jum2f/files/osfstorage), Things-EEG from the [OSF repository](https://osf.io/b83fj/overview).  We provided the processed Things-EEG data and the pretrained CLIP model weights on [Quark Netdisk](https://pan.quark.cn/s/3fe3136bfafb). If the processed data is downloaded, the following three processing steps (Data Preparation, EEG Data Process, and Image Data Process) can be skipped.
 
 Arrange the data according to the following directory:
 
