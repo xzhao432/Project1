@@ -62,29 +62,29 @@ class Brain_Visual_Encoder_EEG(nn.Module):
     
 
         self.img_adapter = nn.Sequential(
-            nn.ELU(),
-            nn.Linear(proj_dim,1024),
+            # nn.ELU(),
+            nn.Linear(proj_dim,768),
             nn.ELU(),
             nn.Dropout(0.85),
-            nn.Linear(1024,proj_dim),
+            nn.Linear(768,proj_dim),
         )
-
 
         self.eeg_adapter = nn.Sequential(
             nn.Linear(25*self.embed_dim,proj_dim),
         )
 
-
         self.learned_scale = nn.Parameter(torch.rand([1,50,proj_dim]),requires_grad = True)
+        self.default_feature = nn.Parameter(torch.zeros([1,4,proj_dim]),requires_grad = True)
         self.softplus      = nn.Softplus()
 
 
     def get_image_feature(self,imgs):
+        imgs = torch.cat([imgs,self.default_feature.expand(imgs.shape[0],-1,-1)],1)
         rates = torch.softmax(self.learned_scale[:,:imgs.shape[1]],-2)
         img  = torch.sum(imgs * rates,1)
-  
         img = self.img_adapter(img)
         return img
+
 
     def forward(self, x):
         x = self.spatial_conv(x[:,None])
@@ -113,7 +113,6 @@ class Brain_Visual_Encoder_MEG(nn.Module):
             nn.Dropout(0.65),
         )
 
-
         self.spatial_conv = nn.Conv2d(1,50,kernel_size=(channels,1),bias=False)
 
         self.eeg_adapter = nn.Sequential(
@@ -122,7 +121,7 @@ class Brain_Visual_Encoder_MEG(nn.Module):
 
         self.img_adapter = nn.Sequential(
             #nn.SiLU(),
-            nn.ELU(),
+            # nn.ELU(),
             nn.Linear(proj_dim,1024),
             nn.Dropout(0.85),
             #nn.SiLU(),

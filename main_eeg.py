@@ -19,6 +19,7 @@ import tqdm
 import torch.nn.functional as F
 import pandas as pd
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print('Using device:', device)
 import scipy.signal as signal
 
 def butter_bandpass(lowcut, highcut, fs, order=5):
@@ -114,7 +115,6 @@ class Pair_dataset(Dataset):
     
 
 def get_dataset(base_path,sub,cross_sub,select_channels = ['P7', 'P5', 'P3', 'P1','Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8','O1', 'Oz', 'O2'],use_filter = False,low_freq = 0.1, high_freq = 50.0,select_period = [0,250]):
-     
     channels = ['Fp1', 'Fp2', 'AF7', 'AF3', 'AFz', 'AF4', 'AF8', 'F7', 'F5', 'F3',
                         'F1', 'F2', 'F4', 'F6', 'F8', 'FT9', 'FT7', 'FC5', 'FC3', 'FC1', 
                         'FCz', 'FC2', 'FC4', 'FC6', 'FT8', 'FT10', 'T7', 'C5', 'C3', 'C1',
@@ -122,23 +122,14 @@ def get_dataset(base_path,sub,cross_sub,select_channels = ['P7', 'P5', 'P3', 'P1
                         'CPz', 'CP2', 'CP4', 'CP6', 'TP8', 'TP10', 'P7', 'P5', 'P3', 'P1',
                         'Pz', 'P2', 'P4', 'P6', 'P8', 'PO7', 'PO3', 'POz', 'PO4', 'PO8',
                         'O1', 'Oz', 'O2']
-     
     selected_idx = [channels.index(ch) for ch in select_channels]
-     
-   
+
     # load blurring img feature
     train_blur_feature_path = os.path.join(base_path,'Image_feature',"MultiBlur_RN50_train.pt")
     train_blur_feature = torch.load(train_blur_feature_path,weights_only=False)
 
     test_blur_feature_path = os.path.join(base_path,'Image_feature',"MultiBlur_RN50_test.pt")
     test_blur_feature = torch.load(test_blur_feature_path,weights_only=False)
-
-
-    # train_blur_feature_path = os.path.join(base_path,'Image_feature','UniformBlur',"UniBlur_RN50_train.pt")
-    # train_blur_feature = torch.load(train_blur_feature_path,weights_only=False)
-
-    # test_blur_feature_path = os.path.join(base_path,'Image_feature','UniformBlur',"UniBlur_RN50_test.pt")
-    # test_blur_feature = torch.load(test_blur_feature_path,weights_only=False)
 
     eeg_data = []
 
@@ -151,13 +142,11 @@ def get_dataset(base_path,sub,cross_sub,select_channels = ['P7', 'P5', 'P3', 'P1
         eeg_data    = loaded_data['eeg'][:,:,selected_idx].mean(axis=1)
         index_dict  = loaded_data['img'][:,0]
 
-
         # random split validation data
         random_index     = np.random.permutation(eeg_data.shape[0])
 
         train_eeg_data   = eeg_data[random_index[:int(eeg_data.shape[0]*0.95)]]
         train_index_dict = index_dict[random_index[:int(eeg_data.shape[0]*0.95)]]
-
 
         val_eeg_data   = eeg_data[random_index[int(eeg_data.shape[0]*0.95):]]
         val_index_dict = index_dict[random_index[int(eeg_data.shape[0]*0.95):]]
@@ -205,18 +194,14 @@ def get_dataset(base_path,sub,cross_sub,select_channels = ['P7', 'P5', 'P3', 'P1
                 val_eeg_data.append(eeg_data[random_index[int(eeg_data.shape[0]*0.95):]])
                 val_index_dict.extend(loaded_data['img'][:,0][random_index[int(eeg_data.shape[0]*0.95):]])
 
-    
-
         train_eeg_data = torch.cat(train_eeg_data,dim=0)
         val_eeg_data   = torch.cat(val_eeg_data,dim=0)
-
 
         train_dataset = Pair_dataset(train_eeg_data,train_blur_feature,train_index_dict,use_filter,low_freq,high_freq,select_period)
         val_dataset   = Pair_dataset(val_eeg_data,train_blur_feature,val_index_dict,use_filter,low_freq,high_freq,select_period)
         test_dataset  = Pair_dataset(test_eeg_data,test_blur_feature,test_index_dict,use_filter,low_freq,high_freq,select_period)
 
     return  train_dataset,val_dataset,test_dataset
-
 
 
 class ClipLoss(nn.Module):
@@ -245,6 +230,7 @@ class ClipLoss(nn.Module):
         image_loss = F.cross_entropy(logits_per_img, labels, reduction='none')
         return eeg_loss,image_loss
 
+
 def get_test_accu(model,prarams,test_dataloader,device):
 
     total = 0
@@ -256,9 +242,7 @@ def get_test_accu(model,prarams,test_dataloader,device):
     with torch.no_grad():
         for i, data in enumerate(test_dataloader):
             teeg = data['eeg'].to(device)
-
             img_list = torch.cat([data[k][:,None].to(device) for k in params['blur_level']],1)
-
             tfea= model(teeg)
             tfea  = tfea/tfea.norm(dim=-1, keepdim=True)
             embed = model.get_image_feature(img_list)
@@ -272,23 +256,17 @@ def get_test_accu(model,prarams,test_dataloader,device):
             top3 += (label[:,None].expand(-1,3) == indices[:, :3]).any(1).sum()
             top5 += (label[:,None].expand(-1,5) == indices).any(1).sum()
             total += teeg.shape[0]
-
         top1_acc = float(top1) / float(total)
         top3_acc = float(top3) / float(total)
         top5_acc = float(top5) / float(total)
-        print(top1,total)
     return top1_acc, top3_acc, top5_acc
 
 
 def train(params,logger): 
+    
     set_seed(params['seed'])
-
-
     base_path = params['data_path']
     print(base_path)
-
-    # train_dataset = Pair_dataset(base_path,params['sub'],'train',params['cross_subject'],params['use_filter'],params['low_freq'], params['high_freq'],params['select_period'],params['select_chs'])
-    # test_dataset  = Pair_dataset(base_path,params['sub'],'test',params['cross_subject'],params['use_filter'],params['low_freq'], params['high_freq'],params['select_period'],params['select_chs'])
 
     train_dataset,val_dataset,test_dataset = get_dataset(base_path,params['sub'],params['cross_subject'],params['select_chs'],params['use_filter'],params['low_freq'], params['high_freq'],params['select_period'])
 
@@ -300,11 +278,13 @@ def train(params,logger):
 
     model = models.__dict__[str(params['net_name'])](len(params['select_chs']),1024,params['select_period'][1]-params['select_period'][0]).to(device)
     optimizier   = torch.optim.AdamW(model.parameters(),lr = args.lr) 
+
     criterion = ClipLoss()
 
     best_test_accu = 0
-    saved_metirc = {}
+    best_val_accu = 0
 
+    saved_metirc = {}
     loss_points = []
     accu_points_top1 = []
     accu_points_top3 = []
@@ -318,10 +298,8 @@ def train(params,logger):
             optimizier.zero_grad()
 
             x = data['eeg'].to(device)
- 
             img_list = torch.cat([data[k][:,None].to(device) for k in params['blur_level']],1)
     
-
             if params['mixup'] == True:
                 rand_index = np.random.permutation(x.shape[0])
                 lam   = np.random.beta(0.2, 0.2)
@@ -332,8 +310,7 @@ def train(params,logger):
             img_f  = model.get_image_feature(img_list)
             img_f  = img_f    / img_f.norm(dim=-1, keepdim=True)
 
-            logit_scale = 1
-            eeg_loss, img_loss = criterion(eeg_f, img_f,logit_scale)
+            eeg_loss, img_loss = criterion(eeg_f, img_f,1)
             loss = (eeg_loss.mean() + img_loss.mean() ) / 2
 
             loss.backward()
@@ -346,23 +323,28 @@ def train(params,logger):
         loss_points.append(train_loss.detach().cpu().numpy())
 
         model.eval()
-
         val_top1_acc, val_top3_acc, val_top5_acc = get_test_accu(model,params,val_loader,device)
-
         test_top1_acc, test_top3_acc, test_top5_acc = get_test_accu(model,params,test_loader,device)
         accu_points_top1.append(test_top1_acc)
         accu_points_top3.append(test_top3_acc)
         accu_points_top5.append(test_top5_acc)
-        
-        if best_test_accu < test_top1_acc:
-            best_model = copy.deepcopy(model.state_dict())
-            # best_test_accu = test_top1_acc
-            best_test_accu = val_top1_acc
-            saved_metirc['epoch'] = e
-            saved_metirc['train_loss'] = train_loss.item()
+
+        # model selsect by validation set
+        if best_val_accu < val_top1_acc:
+            select_model = copy.deepcopy(model.state_dict())
+            best_val_accu = val_top1_acc
             saved_metirc['test_top1_acc'] = test_top1_acc
             saved_metirc['test_top3_acc'] = test_top3_acc
             saved_metirc['test_top5_acc'] = test_top5_acc
+
+        # model with best test accuracy
+        if best_test_accu < test_top1_acc:
+            best_test_accu = test_top1_acc
+            best_model = copy.deepcopy(model.state_dict())
+            saved_metirc['best_test_top1_acc'] = test_top1_acc
+            saved_metirc['best_test_top3_acc'] = test_top3_acc
+            saved_metirc['best_test_top5_acc'] = test_top5_acc
+
 
         logger.info('VAL  EMBED:  epoch:{},train_loss:{:.3},top_1_acc:{:.3},top_3_acc:{:.3},top_5_acc:{:.3}'.format(e,train_loss,val_top1_acc,  val_top3_acc, val_top5_acc))  
         logger.info('TEST EMBED:  epoch:{},train_loss:{:.3},top_1_acc:{:.3},top_3_acc:{:.3},top_5_acc:{:.3}'.format(e,train_loss,test_top1_acc, test_top3_acc, test_top5_acc))  
@@ -372,18 +354,16 @@ def train(params,logger):
     saved_metirc['test_top3_acc_points'] = accu_points_top3
     saved_metirc['test_top5_acc_points'] = accu_points_top5
 
+    # save model
+    torch.save(select_model, os.path.join(params['save_path'], '{}_subject{}_select.pth'.format(params["net_name"],params['sub'])))
+    torch.save(best_model, os.path.join(params['save_path'], '{}_subject{}_best.pth'.format(params["net_name"],params['sub'])))
 
     if params['save_feature']:
-  
-        torch.save(best_model, os.path.join(params['save_path'], '{}_subject{}_best.pth'.format(params["net_name"],params['sub'])))
         model.load_state_dict(best_model)
         model.eval()
-
-
         model_output_features_train = {}
         image_list_feature_train    = {}
         for data in tqdm.tqdm(train_dataset):
-      
             x   = data['eeg'][None].to(device)
             img_list = torch.cat([data[k][None,None].to(device) for k in params['blur_level']],1)
 
@@ -422,21 +402,18 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--net_name', type=str, default = 'Brain_Visual_Encoder_EEG')
-    parser.add_argument('--epoch', type=int, default=10)
+    parser.add_argument('--epoch',    type=int, default=200)
     parser.add_argument('--train_batch_size', type=int, default=1024)
     parser.add_argument('--test_batch_size',  type=int, default=200)
-    parser.add_argument('--lr',    type=float, default=0.001)
-    parser.add_argument('--mixup', type=bool,  default=False)
-
+    parser.add_argument('--lr',       type=float, default=0.001)
+    parser.add_argument('--mixup',    type=bool,  default=False)
     parser.add_argument('--blur_level', type=list, default   = ['l_1','l_3','l_9','l_15','l_21','l_27','l_33','l_39','l_45','l_51','l_57','l_63'])
-
     parser.add_argument('--use_filter', type=bool,  default=False)
     parser.add_argument('--low_freq',   type=float, default=0.1)
     parser.add_argument('--high_freq',  type=float, default=50.0)
-    
     parser.add_argument('--save_feature',  type=bool, default=False)
     parser.add_argument('--cross_subject', type=bool, default=False)
-
+    
     args = parser.parse_args()
     params = {
         'net_name': args.net_name,
@@ -465,9 +442,6 @@ if __name__ == "__main__":
         'cross_subject':args.cross_subject
     }
     
-    # if not os.path.exists(r'/disks/SSD2/dataset/things-eeg/Preprocessed_data_250Hz_whiten' ):
-    #     params['data_path'] = "D:\\Dataset\\things-eeg"
-
     if not os.path.exists(params['save_path']):
         os.makedirs(params['save_path'])
 
@@ -477,38 +451,15 @@ if __name__ == "__main__":
     logger = create_logger(params['save_path'])
     all_metrics = []
 
-    for sub in range(1,3):
+    for sub in range(1,11):
         for seed in range(21,22):
             logger.info('Training subject {} with seed {}'.format(sub,seed))
             params['seed'] = seed
             params['sub'] = sub
             all_metrics.append(train(params,logger))
 
-    import matplotlib.pyplot as plt
-    
-
-    figs, axs = plt.subplots(len(all_metrics), 4, figsize=(24,4*len(all_metrics)))
-    for i, metrics in enumerate(all_metrics):
-        axs[i, 0].plot(metrics['train_loss_points'], label='train_loss')
-        axs[i, 0].set_title('Subject {}, Train Loss'.format(i + 1))
-        axs[i, 0].legend()
-
-        axs[i, 1].plot(metrics['test_top1_acc_points'], label='test_top1_acc')
-        axs[i, 1].set_title('Subject {}, Test Top1 Acc'.format(i + 1))
-        axs[i, 1].legend()
-
-        axs[i, 2].plot(metrics['test_top3_acc_points'], label='test_top3_acc')
-        axs[i, 2].set_title('Subject {}, Test Top3 Acc'.format(i + 1))
-        axs[i, 2].legend()
-
-        axs[i, 3].plot(metrics['test_top5_acc_points'], label='test_top5_acc')
-        axs[i, 3].set_title('Subject {}, Test Top5 Acc'.format(i + 1))
-        axs[i, 3].legend()
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(params['save_path'], 'train_result.png'))
-
-
+    logger.info('===============================================================')
+    logger.info('All metrics (selected by validation set)')
     top_1_accs = [m['test_top1_acc'] for m in all_metrics]
     top_3_accs = [m['test_top3_acc'] for m in all_metrics]
     top_5_accs = [m['test_top5_acc'] for m in all_metrics]
@@ -518,6 +469,19 @@ if __name__ == "__main__":
     logger.info('AVG top_1_acc: {:.3f}'.format(np.mean(top_1_accs)))
     logger.info('AVG top_3_acc: {:.3f}'.format(np.mean(top_3_accs)))
     logger.info('AVG top_5_acc: {:.3f}'.format(np.mean(top_5_accs)))
+
+    logger.info('===============================================================')
+    logger.info('Best metrics')
+    top_1_accs = [m['best_test_top1_acc'] for m in all_metrics]
+    top_3_accs = [m['best_test_top3_acc'] for m in all_metrics]
+    top_5_accs = [m['best_test_top5_acc'] for m in all_metrics]
+    logger.info('top_1_accs: {}'.format(top_1_accs))
+    logger.info('top_3_accs: {}'.format(top_3_accs))
+    logger.info('top_5_accs: {}'.format(top_5_accs))
+    logger.info('AVG top_1_acc: {:.3f}'.format(np.mean(top_1_accs)))
+    logger.info('AVG top_3_acc: {:.3f}'.format(np.mean(top_3_accs)))
+    logger.info('AVG top_5_acc: {:.3f}'.format(np.mean(top_5_accs)))
+
 
     all_metrics = pd.DataFrame(all_metrics)
     all_metrics.to_csv(os.path.join(params['save_path'],"all_metrics.csv"),index=False)

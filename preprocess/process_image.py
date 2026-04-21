@@ -84,11 +84,12 @@ class Make_dataset(nn.Module):
         return image_features_dict
 
 
-
 if __name__ == '__main__':
-
     model = Make_dataset().to(device)
     base_path = r'./data/things-eeg/Image_set'
+    train_features_save_path = './data/things-eeg/Image_feature/MultiBlur_RN50_train.pt'
+    test_features_save_path  = './data/things-eeg/Image_feature/MultiBlur_RN50_test.pt'
+
 
     # Load the image paths
     # train_paths = np.load(f'./preprocess/things_eeg_img_paths.npz', allow_pickle=True)['train_paths']
@@ -103,11 +104,12 @@ if __name__ == '__main__':
 
     for keys in ['1','3','9','15','21','27','33','39','45','51','57','63']:
         train_saved_features[keys] = model.ImageEncoder(train_paths,blur_transform=model.blur_transform[keys])
-    features_filename = './data/things-eeg/Image_feature/MultiBlur_RN50_train.pt'
-    save_dir = os.path.dirname(features_filename)
+    
+
+    save_dir = os.path.dirname(train_features_save_path)
     if os.path.isdir(save_dir) == False:
         os.makedirs(save_dir)
-    torch.save(train_saved_features, features_filename)
+    torch.save(train_saved_features, train_features_save_path)
 
 
     test_paths = []
@@ -119,5 +121,4 @@ if __name__ == '__main__':
     test_saved_features = {}
     for keys in ['1','3','9','15','21','27','33','39','45','51','57','63']:
         test_saved_features[keys] = model.ImageEncoder(test_paths,blur_transform=model.blur_transform[keys])
-    features_filename = './data/things-eeg/Image_feature/MultiBlur_RN50_test.pt'
-    torch.save(test_saved_features, features_filename)
+    torch.save(test_saved_features, test_features_save_path)
