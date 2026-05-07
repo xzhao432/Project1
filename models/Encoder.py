@@ -65,7 +65,7 @@ class Brain_Visual_Encoder_EEG(nn.Module):
             # nn.ELU(),
             nn.Linear(proj_dim,768),
             nn.ELU(),
-            nn.Dropout(0.85),
+            nn.Dropout(0.3),  # 降低从0.85到0.3
             nn.Linear(768,proj_dim),
         )
 

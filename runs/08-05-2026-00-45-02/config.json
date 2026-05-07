@@ -1,0 +1,15 @@
+{
+  "data_dir": "/home/yiqiuliu/DL_Project/image-eeg-data",
+  "clip_features": "/home/yiqiuliu/VisualEEGDecoding/data/things-eeg/Image_feature/MultiBlur_RN50_train.pt",
+  "out_dir": "/home/yiqiuliu/VisualEEGDecoding/runs/project1_adapter_08-05-2026-00-45-02",
+  "epochs": 100,
+  "batch_size": 128,
+  "lr": 0.001,
+  "seed": 2025,
+  "val_ratio": 0.15,
+  "use_test_as_val": false,
+  "max_train_samples": 0,
+  "temperature": 0.07,
+  "weight_decay": 0.01,
+  "early_stop_patience": 20
+}

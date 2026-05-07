@@ -1,83 +1,118 @@
-# Visual_EEG_Decoding
+# Visual EEG Retrieval
 
-Leveraging Visual Blur Perception Characteristics for EEG Decoding [AAAI 2026]
+This repository contains an EEG-to-image retrieval pipeline based on *Leveraging Visual Blur Perception Characteristics for EEG Decoding* (AAAI 2026). The paper maps EEG signals into a visual embedding space and evaluates decoding by retrieving the matching image from an image feature bank.
 
-## Introduction
+This README focuses on the evaluation scenario: running our checkpoint on a new test set.
 
-This is the official implementation for Leveraging Visual Blur Perception Characteristics for EEG Decoding [AAAI 2026].
-
-In this paper, we propose a novel visual decoding framework inspired by human perceptual blurring, achieving a top-1 accuracy of 80% and a top-5 accuracy of 96.9%, surpassing previous state-of-the-art methods by margins of 29.1% and 17.2%, respectively. These findings highlight the potential of incorporating perceptual properties into EEG-based visual decoding.
-
-![1763477641384](image/README/1763477641384.png)
-
-## How to use
-
-1. Data Preparation
-
-Download the Things-image from the [OSF repository](https://osf.io/jum2f/files/osfstorage), Things-EEG from the [OSF repository](https://osf.io/b83fj/overview).  We provided the processed Things-EEG data and the pretrained CLIP model weights on [Quark Netdisk](https://pan.quark.cn/s/3fe3136bfafb). If the processed data is downloaded, the following three processing steps (Data Preparation, EEG Data Process, and Image Data Process) can be skipped.
-
-Arrange the data according to the following directory:
-
-```
-data
-├── things_eeg
-│   ├── Image_set
-│   │   ├── train_images
-│   │   └── test_images
-│   └── Raw_eeg
-│       ├── sub-01
-│       ├── ...
-│       └── sub-10
+```text
+new_test_data/
+  test.pt       # test EEG samples and image ids
+  test_images/  # test images for those image ids
 ```
 
-2. EEG Data Process
+Evaluation checkpoint:
+
+```text
+/home/yiqiuliu/VisualEEGDecoding/runs/08-05-2026-00-45-02/best.pth
+```
+
+## Evaluation Files
+
+```text
+run_test_retrieval.sh                       # recommended evaluation entry point
+test_retrieval.py                           # evaluation implementation
+preprocess/make_multiblur_rn50_features.py  # generates MultiBlur_RN50_test.pt
+```
+
+## Test Data Requirement
+
+`test.pt`, `test_images/`, and `MultiBlur_RN50_test.pt` must describe the same test images.
+
+If the provided `test_images/` are different from the existing repository feature file, regenerate `MultiBlur_RN50_test.pt` before evaluation.
+
+## Step 1: Prepare Test Data
+
+Put the new test files in one directory:
+
+```text
+/path/to/new_test_data/
+  test.pt
+  test_images/
+```
+
+The image ids inside `test.pt` must match the filename stems inside `test_images/`. For example, an id `abc123` should correspond to an image like `abc123.jpg` or `abc123.png`.
+
+## Step 2: Generate Test Image Features
+
+Create a temporary workspace for the new test features:
 
 ```bash
-# Setting the subject number 'sub' from 1 to 10 to process each subject's EEG data.
-python preprocess/process_eeg.py --subject sub
+EVAL_ROOT=/home/yiqiuliu/VisualEEGDecoding/outputs/new_test_feature_workspace
+NEW_TEST_DATA=/path/to/new_test_data
+
+mkdir -p "$EVAL_ROOT/Image_set"
+mkdir -p "$EVAL_ROOT/Image_set/test_images"
+cp -r "$NEW_TEST_DATA/test_images/." "$EVAL_ROOT/Image_set/test_images/"
 ```
 
-3. Image Data Process
+Generate `MultiBlur_RN50_test.pt`:
 
 ```bash
-# Making multi-blur clip features.
-python preprocess/process_image.py
+python /home/yiqiuliu/VisualEEGDecoding/preprocess/make_multiblur_rn50_features.py \
+  --data-root "$EVAL_ROOT" \
+  --split test \
+  --backend open_clip \
+  --clip-weights /home/yiqiuliu/VisualEEGDecoding/data/open_clip_pytorch_model.bin \
+  --batch-size 128
 ```
 
-After the above steps, the directory structure is as follows:
+This writes:
 
-```
-data
-├── things_eeg
-│   ├── Image_set
-│   │   ├── train_images
-│   │   └── test_images
-│   ├── Image_feature
-│   │   ├──MultiBlur_RN50_train.pt
-│   │   └──MultiBlur_RN50_test.pt
-│   └── Preprocessed_data
-│       ├── sub-01
-│       ├── ...
-│       └── sub-10
+```text
+$EVAL_ROOT/Image_feature/MultiBlur_RN50_test.pt
 ```
 
-6. Run
+## Step 3: Run Evaluation
+
+Run the checkpoint on the new test set:
 
 ```bash
-python main_eeg.py
+CHECKPOINT=/home/yiqiuliu/VisualEEGDecoding/runs/08-05-2026-00-45-02/best.pth \
+DATA_DIR=/path/to/new_test_data \
+CLIP_FEATURES=/home/yiqiuliu/VisualEEGDecoding/outputs/new_test_feature_workspace/Image_feature/MultiBlur_RN50_test.pt \
+OUT_DIR=/home/yiqiuliu/VisualEEGDecoding/outputs/new_test_eval \
+bash /home/yiqiuliu/VisualEEGDecoding/run_test_retrieval.sh
 ```
 
-## Acknowledgement
+## Outputs
 
-We extend our gratitude to the prior works [UBP](https://github.com/HaitaoWuTJU/Uncertainty-aware-Blur-Prior/tree/main) and [NICE-EEG](https://github.com/eeyhsong/NICE-EEG) for their pioneering contributions to this field.
+The evaluation writes:
 
-## **Future Plans**
+```text
+/home/yiqiuliu/VisualEEGDecoding/outputs/new_test_eval/metrics_test.json
+/home/yiqiuliu/VisualEEGDecoding/outputs/new_test_eval/rankings_test.csv
+/home/yiqiuliu/VisualEEGDecoding/outputs/new_test_eval/features_test.pt
+```
 
-More code update in progress...
+`metrics_test.json` contains Top-1, Top-3, Top-5, mean rank, and median rank. `rankings_test.csv` contains per-sample retrieval results, including the target id, target rank, and top-k predicted ids.
+
+## Local Example
+
+For the existing local test set:
+
+```bash
+CHECKPOINT=/home/yiqiuliu/VisualEEGDecoding/runs/08-05-2026-00-45-02/best.pth \
+DATA_DIR=/home/yiqiuliu/DL_Project/image-eeg-data \
+CLIP_FEATURES=/home/yiqiuliu/VisualEEGDecoding/data/things-eeg/Image_feature/MultiBlur_RN50_test.pt \
+OUT_DIR=/home/yiqiuliu/VisualEEGDecoding/outputs/local_test_eval \
+bash /home/yiqiuliu/VisualEEGDecoding/run_test_retrieval.sh
+```
+
+Only use this shortcut when the local `test_images/` match the existing `MultiBlur_RN50_test.pt`.
 
 ## Citation
 
-```
+```bibtex
 @inproceedings{liu2026leveraging,
   title={Leveraging Visual Blur Perception Characteristics for EEG Decoding},
   author={Liu, Wenchao and Li, Hongwei and Xu, Zhouyang and Ma, Lin and Li, Haifeng},
