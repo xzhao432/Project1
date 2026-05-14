@@ -4,6 +4,7 @@ from functools import partial
 from PIL import Image
 # import clip
 import sys
+import os
 sys.path.append('../dreamdiffusion/code/')
 from einops import rearrange, repeat
 from transformers import CLIPTokenizer, CLIPTextModel, AutoProcessor, CLIPVisionModel, CLIPVisionModelWithProjection
@@ -139,8 +140,15 @@ class FrozenCLIPEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
     def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):
         super().__init__()
-        self.tokenizer = CLIPTokenizer.from_pretrained(version)
-        self.transformer = CLIPTextModel.from_pretrained(version)
+        # Use local CLIP model path if available
+        local_clip_path = '/home/yiqiuliu/DreamDiffusion_old/pretrains/models/eeg_pretrain_scp/clip_vit_large_patch14'
+        if os.path.exists(local_clip_path):
+            print(f"Loading CLIP from local path: {local_clip_path}")
+            self.tokenizer = CLIPTokenizer.from_pretrained(local_clip_path, local_files_only=True)
+            self.transformer = CLIPTextModel.from_pretrained(local_clip_path, local_files_only=True)
+        else:
+            self.tokenizer = CLIPTokenizer.from_pretrained(version)
+            self.transformer = CLIPTextModel.from_pretrained(version)
         self.device = device
         self.max_length = max_length
         self.freeze()
@@ -168,8 +176,13 @@ class FrozenImageEmbedder(AbstractEncoder):
     """Uses the CLIP transformer encoder for text (from Hugging Face)"""
     def __init__(self, version="openai/clip-vit-large-patch14", device="cuda", max_length=77):
         super().__init__()
-        # self.processor = AutoProcessor.from_pretrained(version)
-        self.transformer = CLIPVisionModelWithProjection.from_pretrained(version)
+        # Use local CLIP model path if available
+        local_clip_path = '/home/yiqiuliu/DreamDiffusion_old/pretrains/models/eeg_pretrain_scp/clip_vit_large_patch14'
+        if os.path.exists(local_clip_path):
+            print(f"Loading CLIP Vision from local path: {local_clip_path}")
+            self.transformer = CLIPVisionModelWithProjection.from_pretrained(local_clip_path, local_files_only=True)
+        else:
+            self.transformer = CLIPVisionModelWithProjection.from_pretrained(version)
         self.device = device
         self.max_length = max_length
         self.freeze()

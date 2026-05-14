@@ -13,17 +13,15 @@ import copy
 
 # own code
 from config import Config_Generative_Model
-from dataset import  create_EEG_dataset
+from dataset_precomputed import create_precomputed_EEG_dataset
 from dc_ldm.ldm_for_eeg import eLDM
 from eval_metrics import get_similarity_metric
+from training_logger import DetailedTrainingLogger
+from gradient_monitor import GradientMonitor
+from validation_visualization import FixedValidationVisualization
 
 
 def wandb_init(config, output_path):
-    # wandb.init( project='dreamdiffusion',
-    #             group="stageB_dc-ldm",
-    #             anonymous="allow",
-    #             config=config,
-    #             reinit=True)
     create_readme(config, output_path)
 
 def wandb_finish():
@@ -43,7 +41,7 @@ def channel_last(img):
 def get_eval_metric(samples, avg=True):
     metric_list = ['mse', 'pcc', 'ssim', 'psm']
     res_list = []
-    
+
     gt_images = [img[0] for img in samples]
     gt_images = rearrange(np.stack(gt_images), 'n c h w -> n h w c')
     samples_to_run = np.arange(1, len(samples[0])) if avg else [1]
@@ -54,12 +52,16 @@ def get_eval_metric(samples, avg=True):
             pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
             res = get_similarity_metric(pred_images, gt_images, method='pair-wise', metric_name=m)
             res_part.append(np.mean(res))
-        res_list.append(np.mean(res_part))     
+        res_list.append(np.mean(res_part))
+
+    # Note: This function is called after training completes, typically on a single process
+    # No distributed synchronization needed here
+
     res_part = []
     for s in samples_to_run:
         pred_images = [img[s] for img in samples]
         pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
-        res = get_similarity_metric(pred_images, gt_images, 'class', None, 
+        res = get_similarity_metric(pred_images, gt_images, 'class', None,
                         n_way=50, num_trials=50, top_k=1, device='cuda')
         res_part.append(np.mean(res))
     res_list.append(np.mean(res_part))
@@ -67,31 +69,29 @@ def get_eval_metric(samples, avg=True):
     metric_list.append('top-1-class')
     metric_list.append('top-1-class (max)')
     return res_list, metric_list
-               
+
 def generate_images(generative_model, eeg_latents_dataset_train, eeg_latents_dataset_test, config):
-    grid, _ = generative_model.generate(eeg_latents_dataset_train, config.num_samples, 
+    # Use model.model.generate() which supports precomputed VAE latents
+    # This correctly decodes ground truth from vae_latent_precomputed instead of using dummy images
+    grid, _ = generative_model.model.generate(eeg_latents_dataset_train, config.num_samples,
                 config.ddim_steps, config.HW, 10) # generate 10 instances
     grid_imgs = Image.fromarray(grid.astype(np.uint8))
     grid_imgs.save(os.path.join(config.output_path, 'samples_train.png'))
-    # wandb.log({'summary/samples_train': wandb.Image(grid_imgs)})
 
-    grid, samples = generative_model.generate(eeg_latents_dataset_test, config.num_samples, 
+    grid, samples = generative_model.model.generate(eeg_latents_dataset_test, config.num_samples,
                 config.ddim_steps, config.HW)
     grid_imgs = Image.fromarray(grid.astype(np.uint8))
     grid_imgs.save(os.path.join(config.output_path,f'./samples_test.png'))
     for sp_idx, imgs in enumerate(samples):
         for copy_idx, img in enumerate(imgs[1:]):
             img = rearrange(img, 'c h w -> h w c')
-            Image.fromarray(img).save(os.path.join(config.output_path, 
+            Image.fromarray(img).save(os.path.join(config.output_path,
                             f'./test{sp_idx}-{copy_idx}.png'))
-
-    # wandb.log({f'summary/samples_test': wandb.Image(grid_imgs)})
 
     metric, metric_list = get_eval_metric(samples, avg=config.eval_avg)
     metric_dict = {f'summary/pair-wise_{k}':v for k, v in zip(metric_list[:-2], metric[:-2])}
     metric_dict[f'summary/{metric_list[-2]}'] = metric[-2]
     metric_dict[f'summary/{metric_list[-1]}'] = metric[-1]
-    # wandb.log(metric_dict)
 
 def normalize(img):
     if img.shape[-1] == 3:
@@ -109,78 +109,113 @@ class random_crop:
             return transforms.RandomCrop(size=(self.size, self.size))(img)
         return img
 
-def fmri_transform(x, sparse_rate=0.2):
-    # x: 1, num_voxels
-    x_aug = copy.deepcopy(x)
-    idx = np.random.choice(x.shape[0], int(x.shape[0]*sparse_rate), replace=False)
-    x_aug[idx] = 0
-    return torch.FloatTensor(x_aug)
+def create_readme(config, path):
+    print(config.__dict__)
+    with open(os.path.join(path, 'README.md'), 'w+') as f:
+        print(config.__dict__, file=f)
+
+def create_trainer(
+    num_epoch,
+    precision,
+    accumulate_grad,
+    logger,
+    output_path=None,
+    validation_dataset=None,
+):
+    # Create detailed training logger callback
+    callbacks = []
+    if output_path is not None:
+        detailed_logger = DetailedTrainingLogger(log_dir=output_path)
+        callbacks.append(detailed_logger)
+
+    # Add gradient monitoring callback
+    gradient_monitor = GradientMonitor(log_every_n_steps=100)
+    callbacks.append(gradient_monitor)
+
+    if output_path is not None and validation_dataset is not None:
+        callbacks.append(
+            FixedValidationVisualization(
+                dataset=validation_dataset,
+                output_path=output_path,
+                num_items=10,
+                num_samples=2,
+                ddim_steps=50,
+                every_n_epochs=2,
+            )
+        )
+
+    # Auto-detect number of available GPUs from CUDA_VISIBLE_DEVICES
+    num_gpus = torch.cuda.device_count()
+    strategy = 'ddp' if num_gpus > 1 else 'auto'
+
+    return pl.Trainer(accelerator='gpu', devices=num_gpus, max_epochs=num_epoch,
+                      logger=logger, precision=precision,
+                      accumulate_grad_batches=accumulate_grad,
+                      limit_val_batches=0,
+                      num_sanity_val_steps=0,
+                      callbacks=callbacks,
+                      strategy=strategy)
 
 def main(config):
     # project setup
+    import torch.serialization
+    from config import Config_Generative_Model as ConfigClass
+
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
-    crop_pix = int(config.crop_ratio*config.img_size)
-    img_transform_train = transforms.Compose([
-        normalize,
+    print("=" * 50)
+    print("Using PRECOMPUTED features for training")
+    print("This skips VAE encoding and CLIP feature extraction")
+    print("=" * 50)
 
-        transforms.Resize((512, 512)),
-        random_crop(config.img_size-crop_pix, p=0.5),
-
-        transforms.Resize((512, 512)),
-        channel_last
-    ])
-    img_transform_test = transforms.Compose([
-        normalize, 
-
-        transforms.Resize((512, 512)),
-        channel_last
-    ])
     if config.dataset == 'EEG':
-
-        eeg_latents_dataset_train, eeg_latents_dataset_test = create_EEG_dataset(
+        # Use precomputed dataset instead of regular dataset
+        eeg_latents_dataset_train, eeg_latents_dataset_test = create_precomputed_EEG_dataset(
             eeg_signals_path=config.eeg_signals_path,
-            splits_path=config.splits_path,
-            imagenet_path=config.imagenet_path,  # IMPORTANT: Pass imagenet_path to use real images
-            image_transform=[img_transform_train, img_transform_test],
+            precomputed_train_path=config.precomputed_train_path,
+            precomputed_test_path=config.precomputed_test_path,
             subject=config.subject
         )
-        # eeg_latents_dataset_train, eeg_latents_dataset_test = create_EEG_dataset_viz( image_transform=[img_transform_train, img_transform_test])
         num_voxels = eeg_latents_dataset_train.data_len
-
     else:
         raise NotImplementedError
-    # print(num_voxels)
 
-    # prepare pretrained mbm 
+    # prepare pretrained mbm
+    torch.serialization.add_safe_globals([ConfigClass])
+    pretrain_mbm_metafile = torch.load(config.pretrain_mbm_path, map_location='cpu', weights_only=False)
 
-    pretrain_mbm_metafile = torch.load(config.pretrain_mbm_path, map_location='cpu')
-
-    # create generateive model
+    # create generative model
     generative_model = eLDM(pretrain_mbm_metafile, num_voxels,
-                device=device, pretrain_root=config.pretrain_gm_path, logger=config.logger, 
+                device=device, pretrain_root=config.pretrain_gm_path, logger=config.logger,
                 ddim_steps=config.ddim_steps, global_pool=config.global_pool, use_time_cond=config.use_time_cond, clip_tune = config.clip_tune, cls_tune = config.cls_tune)
-    
+
     # resume training if applicable
     if config.checkpoint_path is not None:
         model_meta = torch.load(config.checkpoint_path, map_location='cpu')
         generative_model.model.load_state_dict(model_meta['model_state_dict'])
         print('model resumed')
+
     # finetune the model
-    trainer = create_trainer(config.num_epoch, config.precision, config.accumulate_grad, config.logger, check_val_every_n_epoch=2)
+    trainer = create_trainer(
+        config.num_epoch,
+        config.precision,
+        config.accumulate_grad,
+        config.logger,
+        output_path=config.output_path,
+        validation_dataset=eeg_latents_dataset_test,
+    )
     generative_model.finetune(trainer, eeg_latents_dataset_train, eeg_latents_dataset_test,
                 config.batch_size, config.lr, config.output_path, config=config)
 
     # generate images
-    # generate limited train images and generate images for subjects seperately
     generate_images(generative_model, eeg_latents_dataset_train, eeg_latents_dataset_test, config)
 
     return
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('Double Conditioning LDM Finetuning', add_help=False)
+    parser = argparse.ArgumentParser('Double Conditioning LDM Finetuning with Precomputed Features', add_help=False)
     # project parameters
     parser.add_argument('--seed', type=int)
     parser.add_argument('--root_path', type=str, default = '../dreamdiffusion/')
@@ -189,6 +224,14 @@ def get_args_parser():
     parser.add_argument('--crop_ratio', type=float)
     parser.add_argument('--dataset', type=str)
 
+    # EEG data parameters
+    parser.add_argument('--eeg_signals_path', type=str, required=True, help='Path to EEG signals .pt file')
+    parser.add_argument('--subject', type=int, default=0, help='Subject number')
+
+    # precomputed features paths
+    parser.add_argument('--precomputed_train_path', type=str, required=True, help='Path to precomputed train features .h5 file')
+    parser.add_argument('--precomputed_test_path', type=str, required=True, help='Path to precomputed test features .h5 file')
+
     # finetune parameters
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
@@ -196,6 +239,8 @@ def get_args_parser():
     parser.add_argument('--precision', type=int)
     parser.add_argument('--accumulate_grad', type=int)
     parser.add_argument('--global_pool', type=lambda x: x.lower() == 'true')
+    parser.add_argument('--clip_tune', type=lambda x: x.lower() == 'true')
+    parser.add_argument('--cls_tune', type=lambda x: x.lower() == 'true')
 
     # diffusion sampling parameters
     parser.add_argument('--pretrain_gm_path', type=str)
@@ -204,9 +249,6 @@ def get_args_parser():
     parser.add_argument('--use_time_cond', type=lambda x: x.lower() == 'true')
     parser.add_argument('--eval_avg', type=lambda x: x.lower() == 'true')
 
-    # # distributed training parameters
-    # parser.add_argument('--local_rank', type=int)
-
     return parser
 
 def update_config(args, config):
@@ -214,40 +256,26 @@ def update_config(args, config):
         if hasattr(args, attr):
             if getattr(args, attr) != None:
                 setattr(config, attr, getattr(args, attr))
+
+    # Add new attributes that don't exist in config
+    if hasattr(args, 'precomputed_train_path') and args.precomputed_train_path is not None:
+        config.precomputed_train_path = args.precomputed_train_path
+    if hasattr(args, 'precomputed_test_path') and args.precomputed_test_path is not None:
+        config.precomputed_test_path = args.precomputed_test_path
+
     return config
 
-def create_readme(config, path):
-    print(config.__dict__)
-    with open(os.path.join(path, 'README.md'), 'w+') as f:
-        print(config.__dict__, file=f)
-
-
-def create_trainer(num_epoch, precision=32, accumulate_grad_batches=2,logger=None,check_val_every_n_epoch=0):
-    acc = 'gpu' if torch.cuda.is_available() else 'cpu'
-    return pl.Trainer(accelerator=acc, max_epochs=num_epoch, logger=logger, 
-            precision=precision, accumulate_grad_batches=accumulate_grad_batches,
-            enable_checkpointing=False, enable_model_summary=False, gradient_clip_val=0.5,
-            check_val_every_n_epoch=check_val_every_n_epoch)
-  
 if __name__ == '__main__':
-    args = get_args_parser()
-    args = args.parse_args()
     config = Config_Generative_Model()
-    config = update_config(args, config)
-    
-    if config.checkpoint_path is not None:
-        model_meta = torch.load(config.checkpoint_path, map_location='cpu')
-        ckp = config.checkpoint_path
-        config = model_meta['config']
-        config.checkpoint_path = ckp
-        print('Resuming from checkpoint: {}'.format(config.checkpoint_path))
-
-    output_path = os.path.join(config.output_path, 'results', 'generation',  '%s'%(datetime.datetime.now().strftime("%d-%m-%Y-%H-%M-%S")))
+    output_path = os.path.join(config.root_path, 'results', 'generation',  '%s'%(datetime.datetime.now().strftime("%d-%m-%Y-%H-%M-%S")))
     config.output_path = output_path
     os.makedirs(output_path, exist_ok=True)
-    
-    wandb_init(config, output_path)
+    config.logger = None  # Disable wandb
 
-    # logger = WandbLogger()
-    config.logger = None # logger
+    args = get_args_parser()
+    args = args.parse_args()
+    config = update_config(args, config)
+
+    # wandb_init(config, output_path)
     main(config)
+    # wandb_finish()

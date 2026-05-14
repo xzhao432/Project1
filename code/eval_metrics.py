@@ -8,6 +8,8 @@ import torch
 from einops import rearrange
 from torchmetrics.functional import accuracy
 from PIL import Image
+from transformers import CLIPProcessor, CLIPModel
+import torch.nn.functional as F
 
 def larger_the_better(gt, comp):
     return gt > comp
@@ -53,7 +55,64 @@ class fid_wrapper:
         self.fid.reset()
         self.fid.update(torch.tensor(rearrange(gt_imgs, 'n w h c -> n c w h')), real=True)
         self.fid.update(torch.tensor(rearrange(pred_imgs, 'n w h c -> n c w h')), real=False)
-        return self.fid.compute().item() 
+        return self.fid.compute().item()
+
+class clip_similarity_wrapper:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if self._initialized:
+            return
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Use local CLIP model if available
+        local_clip_path = '/home/yiqiuliu/DreamDiffusion_old/pretrains/models/eeg_pretrain_scp/clip_vit_large_patch14'
+        import os
+        if os.path.exists(local_clip_path):
+            print(f"Loading CLIP model from {local_clip_path}")
+            self.model = CLIPModel.from_pretrained(local_clip_path, local_files_only=True).to(self.device)
+            self.processor = CLIPProcessor.from_pretrained(local_clip_path, local_files_only=True)
+        else:
+            print("Loading CLIP model from HuggingFace")
+            self.model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14").to(self.device)
+            self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        self.model.eval()
+        clip_similarity_wrapper._initialized = True
+        print("CLIP model loaded successfully")
+
+    @torch.no_grad()
+    def __call__(self, img1, img2):
+        # img1, img2: w, h, c (0-255)
+        if img1.shape[-1] != 3:
+            img1 = rearrange(img1, 'c w h -> w h c')
+        if img2.shape[-1] != 3:
+            img2 = rearrange(img2, 'c w h -> w h c')
+
+        # Convert to PIL Images
+        img1_pil = Image.fromarray(img1.astype(np.uint8))
+        img2_pil = Image.fromarray(img2.astype(np.uint8))
+
+        # Process images
+        inputs1 = self.processor(images=img1_pil, return_tensors="pt").to(self.device)
+        inputs2 = self.processor(images=img2_pil, return_tensors="pt").to(self.device)
+
+        # Get image features
+        img1_features = self.model.get_image_features(**inputs1)
+        img2_features = self.model.get_image_features(**inputs2)
+
+        # Normalize features
+        img1_features = F.normalize(img1_features, p=2, dim=-1)
+        img2_features = F.normalize(img2_features, p=2, dim=-1)
+
+        # Compute cosine similarity
+        similarity = (img1_features * img2_features).sum(dim=-1)
+
+        return similarity.item() 
 
 def pair_wise_score(pred_imgs, gt_imgs, metric, is_sucess):
     # pred_imgs: n, w, h, 3
@@ -116,8 +175,8 @@ def n_way_top_k_acc(pred, class_id, n_way, num_trials=40, top_k=1):
     for t in range(num_trials):
         idxs_picked = np.random.choice(pick_range, n_way-1, replace=False)
         pred_picked = torch.cat([pred[class_id].unsqueeze(0), pred[idxs_picked]])
-        acc = accuracy(pred_picked.unsqueeze(0), torch.tensor([0], device=pred.device), 
-                    top_k=top_k)
+        acc = accuracy(pred_picked.unsqueeze(0), torch.tensor([0], device=pred.device),
+                    task='multiclass', num_classes=n_way, top_k=top_k)
         acc_list.append(acc.item())
     return np.mean(acc_list), np.std(acc_list)
 
@@ -181,6 +240,9 @@ def get_similarity_metric(img1, img2, method='pair-wise', metric_name='mse', **k
     elif metric_name == 'fid':
         metric_func = fid_wrapper()
         decision_func = smaller_the_better
+    elif metric_name == 'clip_similarity':
+        metric_func = clip_similarity_wrapper()
+        decision_func = larger_the_better
     else:
         raise NotImplementedError
     

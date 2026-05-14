@@ -1,0 +1,18 @@
+# Image files
+*.png
+
+# Python compiled files
+*.pyc
+__pycache__/
+
+# Model weights
+*.pth
+*.ckpt
+
+# HDF5 files
+*.h5
+
+# Log files
+*.log
+*.txt
+*.json

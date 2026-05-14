@@ -439,15 +439,19 @@ class classify_network(nn.Module):
 
 
 class mapping(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim=1024):
         super().__init__()
-        self.maxpool = nn.Conv1d(128, 1, 1, stride=1)#nn.AdaptiveAvgPool1d((1))
-        self.fc = nn.Linear(1024, 768)
+        # input_dim is the embed_dim from encoder
+        self.maxpool = nn.Conv1d(input_dim, 1, 1, stride=1)
+        self.fc = nn.Linear(128, 768)
 
     def forward(self, x):
-        x = self.maxpool(x)
-        x = x.squeeze(1)
-        x = self.fc(x)
+        # x shape: (batch, seq_len=128, embed_dim) from encoder
+        # Conv1d expects (batch, channels, seq_len)
+        x = x.transpose(1, 2)  # (batch, embed_dim, seq_len=128)
+        x = self.maxpool(x)    # (batch, 1, seq_len=128)
+        x = x.squeeze(1)       # (batch, 128)
+        x = self.fc(x)         # (batch, 768)
         return x
 
 

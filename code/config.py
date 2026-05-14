@@ -95,6 +95,7 @@ class Config_Generative_Model:
         self.eeg_signals_path = os.path.join(self.root_path, 'datasets/eeg_5_95_std.pth')
         self.splits_path = os.path.join(self.root_path, 'datasets/block_splits_by_image_single.pth')
         # self.splits_path = os.path.join(self.root_path, 'datasets/block_splits_by_image_all.pth')
+        self.imagenet_path = None  # IMPORTANT: Set this to your image directory to use real images instead of random noise
         self.roi = 'VC'
         self.patch_size = 4 # 16
         self.embed_dim = 1024

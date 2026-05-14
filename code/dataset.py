@@ -257,7 +257,10 @@ class EEGDataset(Dataset):
         self.data_len = 512
         # Compute size
         self.size = len(self.data)
-        self.processor = AutoProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        self.processor = AutoProcessor.from_pretrained(
+            "/home/yiqiuliu/DreamDiffusion_old/pretrains/models/eeg_pretrain_scp/clip_vit_large_patch14",
+            local_files_only=True
+        )
 
     # Get size
     def __len__(self):
@@ -282,7 +285,8 @@ class EEGDataset(Dataset):
         # Get label
         image_name = self.images[self.data[i]["image"]]
         if self.imagenet:
-            image_path = os.path.join(self.imagenet, image_name.split('_')[0], image_name+'.JPEG')
+            # image_name already contains the full relative path (e.g., "training_images/00001_aardvark/aardvark_01b.jpg")
+            image_path = os.path.join(self.imagenet, image_name)
             image_raw = Image.open(image_path).convert('RGB') 
         # print(image_path)
         else:
@@ -308,8 +312,8 @@ class Splitter:
         loaded = torch.load(split_path)
 
         self.split_idx = loaded["splits"][split_num][split_name]
-        # Filter data
-        self.split_idx = [i for i in self.split_idx if i <= len(self.dataset.data) and 450 <= self.dataset.data[i]["eeg"].size(1) <= 600]
+        # Filter data - fix off-by-one error and ensure indices are valid for the filtered dataset
+        self.split_idx = [i for i in self.split_idx if i < len(self.dataset.data) and 450 <= self.dataset.data[i]["eeg"].size(1) <= 600]
         # Compute size
 
         self.size = len(self.split_idx)

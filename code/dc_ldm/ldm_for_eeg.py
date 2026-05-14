@@ -32,18 +32,19 @@ class cond_stage_model(nn.Module):
         # prepare pretrained fmri mae 
         if metafile is not None:
             model = create_model_from_config(metafile['config'], num_voxels, global_pool)
-        
-            model.load_checkpoint(metafile['model'])
+
+            model.load_checkpoint(metafile['model_state_dict'])
         else:
             model = eeg_encoder(time_len=num_voxels, global_pool=global_pool)
         self.mae = model
-        if clip_tune:
-            self.mapping = mapping()
-        if cls_tune:
-            self.cls_net = classify_network()
 
         self.fmri_seq_len = model.num_patches
         self.fmri_latent_dim = model.embed_dim
+
+        if clip_tune:
+            self.mapping = mapping(input_dim=self.fmri_latent_dim)
+        if cls_tune:
+            self.cls_net = classify_network()
         if global_pool == False:
             self.channel_mapper = nn.Sequential(
                 nn.Conv1d(self.fmri_seq_len, self.fmri_seq_len // 2, 1, bias=True),
@@ -96,7 +97,7 @@ class eLDM:
                  pretrain_root='../pretrains/',
                  logger=None, ddim_steps=250, global_pool=True, use_time_cond=False, clip_tune = True, cls_tune = False):
         # self.ckp_path = os.path.join(pretrain_root, 'model.ckpt')
-        self.ckp_path = os.path.join(pretrain_root, 'models/v1-5-pruned.ckpt')
+        self.ckp_path = os.path.join(pretrain_root, 'models/eeg_pretrain_scp/v1-5-pruned.ckpt')
         self.config_path = os.path.join(pretrain_root, 'models/config15.yaml') 
         config = OmegaConf.load(self.config_path)
         config.model.params.unet_config.params.use_time_cond = use_time_cond
@@ -105,7 +106,7 @@ class eLDM:
         self.cond_dim = config.model.params.unet_config.params.context_dim
 
         model = instantiate_from_config(config.model)
-        pl_sd = torch.load(self.ckp_path, map_location="cpu")['state_dict']
+        pl_sd = torch.load(self.ckp_path, map_location="cpu", weights_only=False)['state_dict']
        
         m, u = model.load_state_dict(pl_sd, strict=False)
         model.cond_stage_trainable = True
@@ -144,8 +145,8 @@ class eLDM:
       
         # # stage one: only optimize conditional encoders
         print('\n##### Stage One: only optimize conditional encoders #####')
-        dataloader = DataLoader(dataset, batch_size=bs1, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=bs1, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=bs1, shuffle=True, num_workers=6, pin_memory=True, persistent_workers=True)
+        test_loader = DataLoader(test_dataset, batch_size=bs1, shuffle=False, num_workers=3, pin_memory=True, persistent_workers=True)
         self.model.unfreeze_whole_model()
         self.model.freeze_first_stage()
         # self.model.freeze_whole_model()
@@ -208,7 +209,8 @@ class eLDM:
 
                 x_samples_ddim = model.decode_first_stage(samples_ddim)
                 x_samples_ddim = torch.clamp((x_samples_ddim+1.0)/2.0, min=0.0, max=1.0)
-                gt_image = torch.clamp((gt_image+1.0)/2.0, min=0.0, max=1.0)
+                # GT image is already in [0, 1] range, no need to transform
+                gt_image = torch.clamp(gt_image, min=0.0, max=1.0)
                 
                 all_samples.append(torch.cat([gt_image, x_samples_ddim.detach().cpu()], dim=0)) # put groundtruth at first
                 if output_path is not None:
@@ -281,8 +283,8 @@ class eLDM_eval:
       
         # # stage one: only optimize conditional encoders
         print('\n##### Stage One: only optimize conditional encoders #####')
-        dataloader = DataLoader(dataset, batch_size=bs1, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=bs1, shuffle=False)
+        dataloader = DataLoader(dataset, batch_size=bs1, shuffle=True, num_workers=6, pin_memory=True, persistent_workers=True)
+        test_loader = DataLoader(test_dataset, batch_size=bs1, shuffle=False, num_workers=3, pin_memory=True, persistent_workers=True)
         self.model.unfreeze_whole_model()
         self.model.freeze_first_stage()
         # self.model.freeze_whole_model()
@@ -346,7 +348,8 @@ class eLDM_eval:
 
                 x_samples_ddim = model.decode_first_stage(samples_ddim)
                 x_samples_ddim = torch.clamp((x_samples_ddim+1.0)/2.0, min=0.0, max=1.0)
-                gt_image = torch.clamp((gt_image+1.0)/2.0, min=0.0, max=1.0)
+                # GT image is already in [0, 1] range, no need to transform
+                gt_image = torch.clamp(gt_image, min=0.0, max=1.0)
                 
                 all_samples.append(torch.cat([gt_image, x_samples_ddim.detach().cpu()], dim=0)) # put groundtruth at first
                 if output_path is not None:

@@ -78,10 +78,10 @@ def get_args_parser():
     parser.add_argument('--aug_times', type=int)
     parser.add_argument('--num_sub_limit', type=int)
 
-    parser.add_argument('--include_hcp', type=bool)
-    parser.add_argument('--include_kam', type=bool)
+    parser.add_argument('--include_hcp', type=lambda x: x.lower() == 'true')
+    parser.add_argument('--include_kam', type=lambda x: x.lower() == 'true')
 
-    parser.add_argument('--use_nature_img_loss', type=bool)
+    parser.add_argument('--use_nature_img_loss', type=lambda x: x.lower() == 'true')
     parser.add_argument('--img_recon_weight', type=float)
     
     # distributed training parameters

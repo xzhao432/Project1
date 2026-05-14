@@ -122,9 +122,10 @@ class DDPM(pl.LightningModule):
         self.return_cond = False
         self.output_path = None
         self.main_config = None
-        self.best_val = 0.0 
+        self.best_val = 0.0
         self.run_full_validation_threshold = 0.0
         self.eval_avg = True
+        self.checkpoint_save_interval = 3  # Save checkpoint every N epochs
 
     def re_init_ema(self):
         if self.use_ema:
@@ -359,7 +360,7 @@ class DDPM(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         self.train()
         self.cond_stage_model.train()  ###到底是在哪里训练的
-        
+
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(loss_dict, prog_bar=True,
@@ -368,6 +369,22 @@ class DDPM(pl.LightningModule):
         if self.use_scheduler:
             lr = self.optimizers().param_groups[0]['lr']
             self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+
+        # Save checkpoint: first epoch (epoch 0) + every N epochs thereafter
+        if self.trainer.is_last_batch and self.output_path is not None:
+            current_epoch = self.trainer.current_epoch
+            # Save if it's epoch 0 OR if it's a multiple of checkpoint_save_interval
+            if current_epoch == 0 or current_epoch % self.checkpoint_save_interval == 0:
+                current_loss = loss.item()
+                checkpoint_path = os.path.join(self.output_path, f'checkpoint_epoch{current_epoch}.pth')
+                torch.save({
+                    'model_state_dict': self.state_dict(),
+                    'epoch': current_epoch,
+                    'global_step': self.global_step,
+                    'train_loss': current_loss,
+                    'config': self.main_config,
+                }, checkpoint_path)
+                print(f'\n[Checkpoint] Saved checkpoint: {checkpoint_path} (epoch: {current_epoch}, loss: {current_loss:.6f})')
 
         return loss
 
@@ -397,18 +414,37 @@ class DDPM(pl.LightningModule):
 
         # rng = torch.Generator(device=self.device).manual_seed(2022).set_state(state)
 
-        # state = torch.cuda.get_rng_state()    
+        # state = torch.cuda.get_rng_state()
         with model.ema_scope():
-            for count, item in enumerate(zip(data['eeg'], data['image'])):
+            # Check if using precomputed features
+            has_precomputed = 'vae_latent_precomputed' in data
+
+            if has_precomputed:
+                # Use precomputed VAE latents to decode ground truth
+                iterator = zip(data['eeg'], data['vae_latent_precomputed'])
+            else:
+                # Use original images
+                iterator = zip(data['eeg'], data['image'])
+
+            for count, item in enumerate(iterator):
                 if limit is not None:
                     if count >= limit:
                         break
-                latent = item[0] # fmri embedding
-                gt_image = rearrange(item[1], 'h w c -> 1 c h w') # h w c
+                latent = item[0] # eeg embedding
+
+                # Get ground truth image
+                if has_precomputed:
+                    # Decode from precomputed VAE latent
+                    gt_vae_latent = item[1].unsqueeze(0).to(self.device)  # Add batch dimension
+                    gt_image = model.decode_first_stage(gt_vae_latent)
+                else:
+                    # Use original image
+                    gt_image = rearrange(item[1], 'h w c -> 1 c h w') # h w c
+
                 print(f"rendering {num_samples} examples in {ddim_steps} steps.")
                 # c = model.get_learned_conditioning(repeat(latent, 'h w -> c h w', c=num_samples).to(self.device))
                 c, re_latent = model.get_learned_conditioning(repeat(latent, 'h w -> c h w', c=num_samples).to(self.device))
-                samples_ddim, _ = sampler.sample(S=ddim_steps, 
+                samples_ddim, _ = sampler.sample(S=ddim_steps,
                                                 conditioning=c,
                                                 batch_size=num_samples,
                                                 shape=shape,
@@ -418,7 +454,7 @@ class DDPM(pl.LightningModule):
                 x_samples_ddim = model.decode_first_stage(samples_ddim)
                 x_samples_ddim = torch.clamp((x_samples_ddim+1.0)/2.0,min=0.0, max=1.0)
                 gt_image = torch.clamp((gt_image+1.0)/2.0,min=0.0, max=1.0)
-                
+
                 all_samples.append(torch.cat([gt_image.detach().cpu(), x_samples_ddim.detach().cpu()], dim=0)) # put groundtruth at first
         
         # display as grid
@@ -446,13 +482,32 @@ class DDPM(pl.LightningModule):
         print('###### run full validation! ######\n')
         grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=state)
         metric, metric_list = self.get_eval_metric(all_samples)
-        self.save_images(all_samples, suffix='%.4f'%metric[-1])
-        metric_dict = {f'val/{k}_full':v for k, v in zip(metric_list, metric)}
-        # self.logger.log_metrics(metric_dict)
+        # Use CLIP similarity (index 4) as the selection criterion
+        clip_similarity = metric[4]
+        self.save_images(all_samples, suffix='%.4f'%clip_similarity)
+
+        # Log all metrics including CLIP similarity
+        metric_dict = {}
+        for k, v in zip(metric_list, metric):
+            metric_dict[f'val/{k}_full'] = v
+
+        if metric_dict:
+            self.log_dict(metric_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True, rank_zero_only=True)
+
+        # Save CLIP similarity to file
+        if self.output_path is not None:
+            clip_log_path = os.path.join(self.output_path, 'clip_similarity_log.txt')
+            with open(clip_log_path, 'a') as f:
+                f.write(f'Epoch {self.trainer.current_epoch}, Step {self.global_step} (FULL): {clip_similarity:.6f}\n')
+            print(f'[Rank 0] val/clip_similarity_full: {clip_similarity:.4f}')
+
         grid_imgs = Image.fromarray(grid.astype(np.uint8))
         # self.logger.log_image(key=f'samples_test_full', images=[grid_imgs])
-        if metric[-1] > self.best_val:
-            self.best_val = metric[-1]
+
+        # Save checkpoint if this is the best validation result
+        if self.output_path is not None and clip_similarity > self.best_val:
+            self.best_val = clip_similarity
+            print(f'Saving best checkpoint with CLIP similarity: {clip_similarity:.4f}')
             torch.save(
                 {
                     'model_state_dict': self.state_dict(),
@@ -465,27 +520,53 @@ class DDPM(pl.LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        if batch_idx != 0:
-            return
-        
-        if self.validation_count % 5 == 0 and self.trainer.current_epoch != 0:
-            self.full_validation(batch)
-        else:
-            # pass
-            grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=3, limit=5)
-            metric, metric_list = self.get_eval_metric(all_samples, avg=self.eval_avg)
-            grid_imgs = Image.fromarray(grid.astype(np.uint8))
-            # self.logger.log_image(key=f'samples_test', images=[grid_imgs])
-            metric_dict = {f'val/{k}':v for k, v in zip(metric_list, metric)}
-            # self.logger.log_metrics(metric_dict)
-            if metric[-1] > self.run_full_validation_threshold:
-                self.full_validation(batch, state=state)
-        self.validation_count += 1
+        return torch.tensor(0.0, device=self.device)
+
+        # # All ranks participate in validation to process all validation data
+        # # In DDP mode, each rank processes its own shard of the data
+
+        # # Generate samples for this batch
+        # grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=5, limit=None, state=None)
+        # metric, metric_list = self.get_eval_metric(all_samples)
+
+        # # Log metrics - PyTorch Lightning will aggregate across all ranks
+        # metric_dict = {}
+        # for k, v in zip(metric_list, metric):
+        #     metric_dict[f'val/{k}'] = v
+
+        # if metric_dict:
+        #     # sync_dist=True ensures metrics are averaged across all ranks
+        #     self.log_dict(metric_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True, sync_dist=True)
+
+        # # Only rank 0 does file I/O and checkpoint saving (only on first batch)
+        # if self.global_rank == 0 and batch_idx == 0:
+        #     clip_sim_value = metric[metric_list.index('clip_similarity')]
+        #     if clip_sim_value is not None and self.output_path is not None:
+        #         clip_log_path = os.path.join(self.output_path, 'clip_similarity_log.txt')
+        #         with open(clip_log_path, 'a') as f:
+        #             f.write(f'Epoch {self.trainer.current_epoch}, Step {self.global_step}: {clip_sim_value:.6f}\n')
+        #         print(f'[Rank 0] val/clip_similarity: {clip_sim_value:.4f}')
+
+        #     # Save images from first batch
+        #     self.save_images(all_samples, suffix='%.4f'%clip_sim_value)
+
+        #     # Save checkpoint if this is the best validation result
+        #     if self.output_path is not None and clip_sim_value > self.best_val:
+        #         self.best_val = clip_sim_value
+        #         print(f'Saving best checkpoint with CLIP similarity: {clip_sim_value:.4f}')
+        #         torch.save(
+        #             {
+        #                 'model_state_dict': self.state_dict(),
+        #                 'config': self.main_config,
+        #                 'state': state
+        #             },
+        #             os.path.join(self.output_path, 'checkpoint_best.pth')
+        #         )
 
     def get_eval_metric(self, samples, avg=True):
         metric_list = ['mse', 'pcc', 'ssim', 'psm']
         res_list = []
-        
+
         gt_images = [img[0] for img in samples]
         gt_images = rearrange(np.stack(gt_images), 'n c h w -> n h w c')
         samples_to_run = np.arange(1, len(samples[0])) if avg else [1]
@@ -496,12 +577,34 @@ class DDPM(pl.LightningModule):
                 pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
                 res = get_similarity_metric(pred_images, gt_images, method='pair-wise', metric_name=m)
                 res_part.append(np.mean(res))
-            res_list.append(np.mean(res_part))     
+            res_list.append(np.mean(res_part))
+
+        # Compute CLIP similarity only on rank 0 to save memory (~1.5GB per GPU)
+        clip_similarity_value = 0.0
+        if self.global_rank == 0:
+            clip_sim_parts = []
+            for s in samples_to_run:
+                pred_images = [img[s] for img in samples]
+                pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
+                clip_sim = get_similarity_metric(pred_images, gt_images, method='pair-wise', metric_name='clip_similarity')
+                clip_sim_parts.append(np.mean(clip_sim))
+            clip_similarity_value = np.mean(clip_sim_parts)
+
+        # Broadcast CLIP similarity from rank 0 to all other ranks
+        # This ensures all ranks have the same value for metric aggregation
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            clip_similarity_tensor = torch.tensor(clip_similarity_value, device=self.device)
+            torch.distributed.broadcast(clip_similarity_tensor, src=0)
+            clip_similarity_value = clip_similarity_tensor.item()
+
+        res_list.append(clip_similarity_value)
+        metric_list.append('clip_similarity')
+
         res_part = []
         for s in samples_to_run:
             pred_images = [img[s] for img in samples]
             pred_images = rearrange(np.stack(pred_images), 'n c h w -> n h w c')
-            res = get_similarity_metric(pred_images, gt_images, 'class', None, 
+            res = get_similarity_metric(pred_images, gt_images, 'class', None,
                             n_way=50, num_trials=50, top_k=1, device='cuda')
             res_part.append(np.mean(res))
         res_list.append(np.mean(res_part))
@@ -621,6 +724,15 @@ class LatentDiffusion(DDPM):
         if self.clip_tune:
             self.image_embedder = FrozenImageEmbedder()
         self.cls_tune = False
+
+        # CLIP loss weight for balancing diffusion and CLIP objectives
+        self.clip_loss_weight = 0.1
+
+        # Track best training loss for checkpoint saving
+        self.best_train_loss = float('inf')
+
+        # Fixed validation samples for consistent visualization across epochs
+        self.fixed_val_batch = None
 
     def make_cond_schedule(self, ):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
@@ -839,16 +951,21 @@ class LatentDiffusion(DDPM):
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None):
-        x = super().get_input(batch, k)
-        if bs is not None:
-            x = x[:bs]
-        x = x.to(self.device)
-        encoder_posterior = self.encode_first_stage(x)
-        # print('encoder_posterior.shape')
-        # print(encoder_posterior.shape)
-        z = self.get_first_stage_encoding(encoder_posterior).detach()
-        # print('z.shape')
-        # print(z.shape)
+        # Check if we have precomputed VAE latents
+        if 'vae_latent_precomputed' in batch:
+            z = batch['vae_latent_precomputed']
+            if bs is not None:
+                z = z[:bs]
+            z = z.to(self.device)
+            x = None  # We don't need the original image
+        else:
+            # Original path: encode image with VAE
+            x = super().get_input(batch, k)
+            if bs is not None:
+                x = x[:bs]
+            x = x.to(self.device)
+            encoder_posterior = self.encode_first_stage(x)
+            z = self.get_first_stage_encoding(encoder_posterior).detach()
         # print(cond_key)
         # print(self.cond_stage_key)
         # print(cond_key)
@@ -892,10 +1009,28 @@ class LatentDiffusion(DDPM):
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
-        out = [z, c , batch['label'], batch['image_raw']]
+
+        # Handle precomputed CLIP features
+        image_raw = batch['image_raw']
+        if 'clip_feature_precomputed' in batch:
+            # Add precomputed CLIP feature to image_raw dict
+            if isinstance(image_raw, dict):
+                image_raw['clip_feature_precomputed'] = batch['clip_feature_precomputed']
+            else:
+                # If image_raw is not a dict, wrap it
+                image_raw = {
+                    'pixel_values': image_raw,
+                    'clip_feature_precomputed': batch['clip_feature_precomputed']
+                }
+
+        out = [z, c , batch['label'], image_raw]
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z)
-            out.extend([x, xrec])
+            # Only include x if it exists (not precomputed)
+            if x is not None:
+                out.extend([x, xrec])
+            else:
+                out.extend([xrec])
         if return_original_cond:
             out.append(xc)
         return out
@@ -1059,15 +1194,22 @@ class LatentDiffusion(DDPM):
         # pre_cls = self.cond_stage_model.get_cls(re_latent)
         # rencon = self.cond_stage_model.recon(re_latent)
         if self.clip_tune:
-            image_embeds = self.image_embedder(image_raw)
+            # Check if we have precomputed CLIP features
+            if isinstance(image_raw, dict) and 'clip_feature_precomputed' in image_raw:
+                image_embeds = image_raw['clip_feature_precomputed'].to(self.device)
+            else:
+                image_embeds = self.image_embedder(image_raw)
             loss_clip = self.cond_stage_model.get_clip_loss(re_latent, image_embeds)
         # loss_recon = self.recon_loss(imgs, rencon)
         # loss_cls = self.cls_loss(label, pre_cls)
-            loss += loss_clip
+            # Apply weight to CLIP loss before adding to total loss
+            loss += self.clip_loss_weight * loss_clip
         # loss += loss_cls # loss_recon +  #(self.original_elbo_weight * loss_vlb)
         # loss_dict.update({f'{prefix}/loss_recon': loss_recon})
         # loss_dict.update({f'{prefix}/loss_cls': loss_cls})
+            # Log both weighted and unweighted CLIP loss for monitoring
             loss_dict.update({f'{prefix}/loss_clip': loss_clip})
+            loss_dict.update({f'{prefix}/loss_clip_weighted': self.clip_loss_weight * loss_clip})
         if self.cls_tune:
             pre_cls = self.cond_stage_model.get_cls(re_latent)
             loss_cls = self.cls_loss(label, pre_cls)
@@ -1180,7 +1322,7 @@ class LatentDiffusion(DDPM):
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
 
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar[t.cpu()].to(self.device)
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
         # loss = loss_simple / torch.exp(self.logvar) + self.logvar
         if self.learn_logvar:
@@ -1606,7 +1748,8 @@ class EEGClassifier(pl.LightningModule):
         #     self.scheduler_config = scheduler_config
         self.cond_stage_trainable = True
         self.main_config = None
-        self.best_val = 0.0 
+        self.best_val = 0.0
+        self.best_train_loss = float('inf')  # Track best training loss for checkpoint saving
         self.cond_stage_model = None
         self.validation_count = 0
         
@@ -1617,7 +1760,7 @@ class EEGClassifier(pl.LightningModule):
         # print(t.shape)
         # if self.model.conditioning_key is not None:
         #     assert c is not None
-        #     imgs = c
+        imgs = c
         #     if self.cond_stage_trainable:
                 # c = self.get_learned_conditioning(c)
         c, re_latent = self.get_learned_conditioning(c)
@@ -1635,7 +1778,7 @@ class EEGClassifier(pl.LightningModule):
         # rencon = self.cond_stage_model.recon(re_latent)
         if self.clip_tune:
             image_embeds = self.image_embedder(image_raw)
-            loss_clip = self.cond_stage_model.get_clip_loss(re_latent, image_embeds)
+            loss_clip = self.cond_stage_model.get_clip_loss(imgs, image_embeds)
         # loss_recon = self.recon_loss(imgs, rencon)
         
             loss += loss_clip
@@ -1661,7 +1804,7 @@ class EEGClassifier(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         self.train()
         self.cond_stage_model.train()  ###到底是在哪里训练的
-        
+
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(loss_dict, prog_bar=True,
@@ -1672,6 +1815,65 @@ class EEGClassifier(pl.LightningModule):
         #     self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=False, on_epoch=True)
 
         return loss
+
+    def on_train_epoch_end(self):
+        """Save checkpoint at the end of each epoch based on training loss"""
+        # Get the current epoch's average training loss
+        # PyTorch Lightning aggregates the losses automatically
+        if hasattr(self.trainer, 'callback_metrics'):
+            # Try to get the total loss from logged metrics
+            train_loss = None
+            for key in self.trainer.callback_metrics:
+                if 'train/loss' in key and 'clip' not in key and 'cls' not in key:
+                    train_loss = self.trainer.callback_metrics[key].item()
+                    break
+
+            # If we can't find a generic train/loss, compute from components
+            if train_loss is None:
+                loss_cls = self.trainer.callback_metrics.get('train/loss_cls', None)
+                loss_clip = self.trainer.callback_metrics.get('train/loss_clip', None)
+                if loss_cls is not None:
+                    train_loss = loss_cls.item()
+                    if loss_clip is not None:
+                        train_loss += loss_clip.item()
+
+            if train_loss is not None and self.output_path is not None:
+                current_epoch = self.trainer.current_epoch
+
+                # Save checkpoint for every epoch
+                checkpoint_path = os.path.join(
+                    self.output_path,
+                    f'checkpoint_epoch{current_epoch:03d}_loss{train_loss:.4f}.pth'
+                )
+
+                # Only save from rank 0 in distributed training
+                if self.global_rank == 0:
+                    torch.save(
+                        {
+                            'model_state_dict': self.state_dict(),
+                            'config': self.main_config,
+                            'epoch': current_epoch,
+                            'train_loss': train_loss
+                        },
+                        checkpoint_path
+                    )
+                    print(f"\nSaved checkpoint: {checkpoint_path}")
+
+                    # Save best checkpoint if this is the lowest loss
+                    if train_loss < self.best_train_loss:
+                        self.best_train_loss = train_loss
+                        best_checkpoint_path = os.path.join(self.output_path, 'checkpoint_best.pth')
+                        torch.save(
+                            {
+                                'model_state_dict': self.state_dict(),
+                                'config': self.main_config,
+                                'epoch': current_epoch,
+                                'train_loss': train_loss
+                            },
+                            best_checkpoint_path
+                        )
+                        print(f"New best checkpoint saved with loss {train_loss:.4f}")
+
 
     def configure_optimizers(self):
         lr = self.learning_rate
@@ -1798,24 +2000,26 @@ class EEGClassifier(pl.LightningModule):
             return res
 
     def validation_step(self, batch, batch_idx):
-        print('val step')
-        print('batch_idx:', batch_idx)
-        # if batch_idx != 0:
-        #     return
-        
-        if self.validation_count % 1 == 0 and self.trainer.current_epoch != 0:
-            self.full_validation(batch)
-        # else:
-        #     # pass
-        #     grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=3, limit=5)
-        #     metric, metric_list = self.get_eval_metric(all_samples, avg=self.eval_avg)
-        #     grid_imgs = Image.fromarray(grid.astype(np.uint8))
-        #     # self.logger.log_image(key=f'samples_test', images=[grid_imgs])
-        #     metric_dict = {f'val/{k}':v for k, v in zip(metric_list, metric)}
-        #     # self.logger.log_metrics(metric_dict)
-        #     if metric[-1] > self.run_full_validation_threshold:
-        #         self.full_validation(batch, state=state)
-        self.validation_count += 1
+        # Validation disabled - using training loss for checkpoint selection instead
+        return
+        # print('val step')
+        # print('batch_idx:', batch_idx)
+        # # if batch_idx != 0:
+        # #     return
+        #
+        # if self.validation_count % 1 == 0 and self.trainer.current_epoch != 0:
+        #     self.full_validation(batch)
+        # # else:
+        # #     # pass
+        # #     grid, all_samples, state = self.generate(batch, ddim_steps=self.ddim_steps, num_samples=3, limit=5)
+        # #     metric, metric_list = self.get_eval_metric(all_samples, avg=self.eval_avg)
+        # #     grid_imgs = Image.fromarray(grid.astype(np.uint8))
+        # #     # self.logger.log_image(key=f'samples_test', images=[grid_imgs])
+        # #     metric_dict = {f'val/{k}':v for k, v in zip(metric_list, metric)}
+        # #     # self.logger.log_metrics(metric_dict)
+        # #     if metric[-1] > self.run_full_validation_threshold:
+        # #         self.full_validation(batch, state=state)
+        # self.validation_count += 1
 
 
     def full_validation(self, batch, state=None):
@@ -1832,7 +2036,11 @@ class EEGClassifier(pl.LightningModule):
         # metric_dict = {f'val/{k}_full':v for k, v in zip(metric_list, metric)}
         # self.logger.log_metrics(metric_dict)
         acc1, acc5 = self.accuracy(pre_cls, batch['label'], topk=(1, 5))
-        print(acc1, acc5)
+        print(f'Validation acc1: {acc1[0]:.4f}, acc5: {acc5[0]:.4f}')
+
+        # Log accuracy metrics
+        self.log('val/acc1', acc1[0], prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('val/acc5', acc5[0], prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)
         # acc1, acc5 = accuracy(output, labels, topk=(1, 5))
         # grid_imgs = Image.fromarray(grid.astype(np.uint8))
 
