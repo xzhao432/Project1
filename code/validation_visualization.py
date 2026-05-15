@@ -84,7 +84,9 @@ class FixedValidationVisualization(pl.Callback):
             )
             if was_training:
                 pl_module.train()
-                if hasattr(pl_module, "cond_stage_model"):
+                if getattr(pl_module, "visual_eeg_projector_only", False):
+                    pl_module.apply_visual_eeg_projector_only_freeze()
+                elif hasattr(pl_module, "cond_stage_model"):
                     pl_module.cond_stage_model.train()
 
             os.makedirs(self.output_path, exist_ok=True)

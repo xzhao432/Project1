@@ -126,6 +126,21 @@ class Config_Generative_Model:
         self.subject = 4
         self.eval_avg = True
 
+        # EEG channel adapter parameters
+        self.eeg_input_channels = 63
+        self.eeg_pretrained_channels = 128
+        self.adapter_warmup_epochs = 2
+
+        # Optional VisualEEGDecoding retrieval encoder conditioner
+        self.use_visual_eeg_encoder = False
+        self.retrieval_eeg_signals_path = None
+        self.visual_eeg_checkpoint_path = None
+        self.visual_eeg_channels = 63
+        self.visual_eeg_temporal_len = 250
+        self.visual_eeg_proj_dim = 1024
+        self.freeze_visual_eeg_encoder = True
+        self.visual_eeg_projector_only = True
+
         # diffusion sampling parameters
         self.num_samples = 5
         self.ddim_steps = 250

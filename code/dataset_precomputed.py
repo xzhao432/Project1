@@ -15,12 +15,14 @@ class PrecomputedEEGDataset(Dataset):
     This significantly speeds up training by skipping expensive VAE encoding and CLIP extraction.
     """
 
-    def __init__(self, eeg_signals_path, precomputed_h5_path, subject=0):
+    def __init__(self, eeg_signals_path, precomputed_h5_path, subject=0, retrieval_eeg_signals_path=None):
         """
         Args:
             eeg_signals_path: Path to EEG signals .pt file
             precomputed_h5_path: Path to precomputed features .h5 file
             subject: Subject number (default: 0)
+            retrieval_eeg_signals_path: Optional path to 63x250 EEG tensors for
+                the VisualEEGDecoding retrieval encoder.
         """
         self.subject = subject
 
@@ -35,6 +37,19 @@ class PrecomputedEEGDataset(Dataset):
         self.num_voxels = 440
         self.data_len = 512
 
+        self.retrieval_data = None
+        self.retrieval_data_len = 250
+        if retrieval_eeg_signals_path is not None:
+            retrieval_loaded = torch.load(retrieval_eeg_signals_path, weights_only=False)
+            if subject != 0:
+                self.retrieval_data = [
+                    retrieval_loaded['dataset'][i]
+                    for i in range(len(retrieval_loaded['dataset']))
+                    if retrieval_loaded['dataset'][i]['subject'] == subject
+                ]
+            else:
+                self.retrieval_data = retrieval_loaded['dataset']
+
         # Open HDF5 file (keep it open for fast access)
         self.h5_file = h5py.File(precomputed_h5_path, 'r')
 
@@ -44,6 +59,8 @@ class PrecomputedEEGDataset(Dataset):
 
         print(f"Loaded precomputed dataset: {self.precomputed_len} samples")
         print(f"  Original EEG data: {len(self.data)} samples")
+        if self.retrieval_data is not None:
+            print(f"  Retrieval EEG data: {len(self.retrieval_data)} samples")
         print(f"  VAE latents shape: {self.h5_file['vae_latents'].shape}")
         print(f"  CLIP features shape: {self.h5_file['clip_features'].shape}")
 
@@ -73,6 +90,22 @@ class PrecomputedEEGDataset(Dataset):
         eeg = f(x2)
         eeg = torch.from_numpy(eeg).float()
 
+        eeg_retrieval = None
+        if self.retrieval_data is not None:
+            if original_idx >= len(self.retrieval_data):
+                raise IndexError(
+                    f"Precomputed index {original_idx} out of bounds for retrieval EEG data "
+                    f"(size: {len(self.retrieval_data)})."
+                )
+            eeg_retrieval = self.retrieval_data[original_idx]["eeg"].float()
+            if eeg_retrieval.ndim != 2:
+                raise ValueError(f"Expected retrieval EEG [C,T], got {tuple(eeg_retrieval.shape)}")
+            if eeg_retrieval.shape[-1] != self.retrieval_data_len:
+                eeg_np = eeg_retrieval.numpy()
+                x = np.linspace(0, 1, eeg_np.shape[-1])
+                x2 = np.linspace(0, 1, self.retrieval_data_len)
+                eeg_retrieval = torch.from_numpy(interp1d(x, eeg_np)(x2)).float()
+
         # Get label
         label = torch.tensor(self.data[original_idx]["label"]).long()
 
@@ -86,7 +119,7 @@ class PrecomputedEEGDataset(Dataset):
         dummy_image = torch.zeros(1, 1, 1)  # Minimal placeholder
         dummy_image_raw = {'pixel_values': torch.zeros(1, 1, 1)}  # Minimal placeholder
 
-        return {
+        sample = {
             'eeg': eeg,
             'label': label,
             'image': dummy_image,  # Placeholder
@@ -94,6 +127,9 @@ class PrecomputedEEGDataset(Dataset):
             'vae_latent_precomputed': vae_latent,  # Precomputed VAE latent
             'clip_feature_precomputed': clip_feature,  # Precomputed CLIP feature
         }
+        if eeg_retrieval is not None:
+            sample['eeg_retrieval'] = eeg_retrieval
+        return sample
 
     def __del__(self):
         # Close HDF5 file when dataset is destroyed
@@ -104,7 +140,13 @@ class PrecomputedEEGDataset(Dataset):
                 pass  # Silently ignore errors during cleanup
 
 
-def create_precomputed_EEG_dataset(eeg_signals_path, precomputed_train_path, precomputed_test_path, subject=0):
+def create_precomputed_EEG_dataset(
+    eeg_signals_path,
+    precomputed_train_path,
+    precomputed_test_path,
+    subject=0,
+    retrieval_eeg_signals_path=None,
+):
     """
     Create train and test datasets using precomputed features.
 
@@ -113,11 +155,23 @@ def create_precomputed_EEG_dataset(eeg_signals_path, precomputed_train_path, pre
         precomputed_train_path: Path to train precomputed .h5 file
         precomputed_test_path: Path to test precomputed .h5 file
         subject: Subject number
+        retrieval_eeg_signals_path: Optional path to 63x250 EEG tensors for
+            the VisualEEGDecoding retrieval encoder.
 
     Returns:
         dataset_train, dataset_test
     """
-    dataset_train = PrecomputedEEGDataset(eeg_signals_path, precomputed_train_path, subject)
-    dataset_test = PrecomputedEEGDataset(eeg_signals_path, precomputed_test_path, subject)
+    dataset_train = PrecomputedEEGDataset(
+        eeg_signals_path,
+        precomputed_train_path,
+        subject,
+        retrieval_eeg_signals_path=retrieval_eeg_signals_path,
+    )
+    dataset_test = PrecomputedEEGDataset(
+        eeg_signals_path,
+        precomputed_test_path,
+        subject,
+        retrieval_eeg_signals_path=retrieval_eeg_signals_path,
+    )
 
     return dataset_train, dataset_test

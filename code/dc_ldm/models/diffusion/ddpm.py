@@ -361,6 +361,11 @@ class DDPM(pl.LightningModule):
         self.train()
         self.cond_stage_model.train()  ###到底是在哪里训练的
 
+        if getattr(self, 'visual_eeg_projector_only', False):
+            self.apply_visual_eeg_projector_only_freeze()
+        elif hasattr(self, "_set_adapter_warmup_trainability"):
+            self._set_adapter_warmup_trainability()
+
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(loss_dict, prog_bar=True,
@@ -371,7 +376,7 @@ class DDPM(pl.LightningModule):
             self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=False, on_epoch=True)
 
         # Save checkpoint: first epoch (epoch 0) + every N epochs thereafter
-        if self.trainer.is_last_batch and self.output_path is not None:
+        if self.trainer.is_last_batch and self.output_path is not None and self.global_rank == 0:
             current_epoch = self.trainer.current_epoch
             # Save if it's epoch 0 OR if it's a multiple of checkpoint_save_interval
             if current_epoch == 0 or current_epoch % self.checkpoint_save_interval == 0:
@@ -418,13 +423,16 @@ class DDPM(pl.LightningModule):
         with model.ema_scope():
             # Check if using precomputed features
             has_precomputed = 'vae_latent_precomputed' in data
+            eeg_key = 'eeg_retrieval' if getattr(model, 'use_visual_eeg_encoder', False) else 'eeg'
+            if eeg_key not in data:
+                raise KeyError(f"Generation requires data['{eeg_key}'] for conditioning.")
 
             if has_precomputed:
                 # Use precomputed VAE latents to decode ground truth
-                iterator = zip(data['eeg'], data['vae_latent_precomputed'])
+                iterator = zip(data[eeg_key], data['vae_latent_precomputed'])
             else:
                 # Use original images
-                iterator = zip(data['eeg'], data['image'])
+                iterator = zip(data[eeg_key], data['image'])
 
             for count, item in enumerate(iterator):
                 if limit is not None:
@@ -507,16 +515,17 @@ class DDPM(pl.LightningModule):
         # Save checkpoint if this is the best validation result
         if self.output_path is not None and clip_similarity > self.best_val:
             self.best_val = clip_similarity
-            print(f'Saving best checkpoint with CLIP similarity: {clip_similarity:.4f}')
-            torch.save(
-                {
-                    'model_state_dict': self.state_dict(),
-                    'config': self.main_config,
-                    'state': state
+            if self.global_rank == 0:
+                print(f'Saving best checkpoint with CLIP similarity: {clip_similarity:.4f}')
+                torch.save(
+                    {
+                        'model_state_dict': self.state_dict(),
+                        'config': self.main_config,
+                        'state': state
 
-                },
-                os.path.join(self.output_path, 'checkpoint_best.pth')
-            )
+                    },
+                    os.path.join(self.output_path, 'checkpoint_best.pth')
+                )
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -721,8 +730,7 @@ class LatentDiffusion(DDPM):
             self.restarted_from_ckpt = True
         self.train_cond_stage_only = False
         self.clip_tune = True
-        if self.clip_tune:
-            self.image_embedder = FrozenImageEmbedder()
+        self.image_embedder = None
         self.cls_tune = False
 
         # CLIP loss weight for balancing diffusion and CLIP objectives
@@ -733,6 +741,14 @@ class LatentDiffusion(DDPM):
 
         # Fixed validation samples for consistent visualization across epochs
         self.fixed_val_batch = None
+
+        # Track adapter warmup state changes
+        self._adapter_warmup_logged = False
+
+    def _ensure_image_embedder(self):
+        if self.image_embedder is None:
+            self.image_embedder = FrozenImageEmbedder().to(self.device)
+        return self.image_embedder
 
     def make_cond_schedule(self, ):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
@@ -805,7 +821,81 @@ class LatentDiffusion(DDPM):
         self.first_stage_model.trainable = True
         for param in self.parameters():
             param.requires_grad = True
-        
+
+    def apply_visual_eeg_projector_only_freeze(self):
+        """Freeze VAE, UNet and VisualEEG encoder; train only EEG-to-condition projector."""
+        self.freeze_whole_model()
+        self.first_stage_model.trainable = False
+        self.first_stage_model.eval()
+        self.model.eval()
+        self.cond_stage_model.train()
+
+        trainable = []
+        if hasattr(self.cond_stage_model, 'projector_parameters'):
+            trainable = list(self.cond_stage_model.projector_parameters())
+        elif hasattr(self.cond_stage_model, 'trainable_parameters'):
+            trainable = list(self.cond_stage_model.trainable_parameters())
+        else:
+            trainable = list(self.cond_stage_model.parameters())
+
+        for p in trainable:
+            p.requires_grad = True
+
+        if hasattr(self.cond_stage_model, '_apply_encoder_freeze'):
+            self.cond_stage_model._apply_encoder_freeze()
+
+        return trainable
+
+    def _set_adapter_warmup_trainability(self):
+        """
+        Apply adapter warmup strategy:
+        - During warmup epochs: freeze EEG encoder (mae), train adapter + mapping + dim_mapper + channel_mapper
+        - After warmup: unfreeze everything
+        """
+        if not hasattr(self, 'main_config') or self.main_config is None:
+            return
+
+        warmup_epochs = getattr(self.main_config, 'adapter_warmup_epochs', 0)
+        cond = self.cond_stage_model
+
+        if not hasattr(cond, 'channel_adapter'):
+            return
+
+        current_epoch = self.trainer.current_epoch if hasattr(self, 'trainer') else 0
+        in_warmup = current_epoch < warmup_epochs
+
+        if in_warmup:
+            # Warmup phase: freeze mae, train adapter and other components
+            for p in cond.mae.parameters():
+                p.requires_grad = False
+            for p in cond.channel_adapter.parameters():
+                p.requires_grad = True
+            if hasattr(cond, 'mapping'):
+                for p in cond.mapping.parameters():
+                    p.requires_grad = True
+            if hasattr(cond, 'dim_mapper'):
+                for p in cond.dim_mapper.parameters():
+                    p.requires_grad = True
+            if hasattr(cond, 'channel_mapper'):
+                for p in cond.channel_mapper.parameters():
+                    p.requires_grad = True
+
+            # Log once per warmup phase
+            if not self._adapter_warmup_logged:
+                print(f"[AdapterWarmup] Epoch {current_epoch}/{warmup_epochs-1}: Freezing EEG encoder, training adapter only")
+                self._adapter_warmup_logged = True
+        else:
+            # Post-warmup: unfreeze everything
+            for p in cond.mae.parameters():
+                p.requires_grad = True
+            for p in cond.channel_adapter.parameters():
+                p.requires_grad = True
+
+            # Log once when exiting warmup
+            if self._adapter_warmup_logged and current_epoch == warmup_epochs:
+                print(f"[AdapterWarmup] Epoch {current_epoch}: Unfreezing EEG encoder, full finetuning")
+                self._adapter_warmup_logged = False  # Reset for potential future use
+
     def instantiate_cond_stage(self, config):
         if not self.cond_stage_trainable:
             if config == "__is_first_stage__":
@@ -974,7 +1064,15 @@ class LatentDiffusion(DDPM):
                 cond_key = self.cond_stage_key
             if cond_key != self.first_stage_key:
                 if cond_key in ['caption', 'coordinates_bbox','fmri', 'eeg']:
-                    xc = batch[cond_key]
+                    if cond_key == 'eeg' and getattr(self, 'use_visual_eeg_encoder', False):
+                        if 'eeg_retrieval' not in batch:
+                            raise KeyError(
+                                "use_visual_eeg_encoder=True requires batch['eeg_retrieval']. "
+                                "Pass --retrieval_eeg_signals_path to the precomputed dataset."
+                            )
+                        xc = batch['eeg_retrieval']
+                    else:
+                        xc = batch[cond_key]
                 elif cond_key == 'class_label':
                     xc = batch
                 else:
@@ -1198,7 +1296,7 @@ class LatentDiffusion(DDPM):
             if isinstance(image_raw, dict) and 'clip_feature_precomputed' in image_raw:
                 image_embeds = image_raw['clip_feature_precomputed'].to(self.device)
             else:
-                image_embeds = self.image_embedder(image_raw)
+                image_embeds = self._ensure_image_embedder()(image_raw)
             loss_clip = self.cond_stage_model.get_clip_loss(re_latent, image_embeds)
         # loss_recon = self.recon_loss(imgs, rencon)
         # loss_cls = self.cls_loss(label, pre_cls)
@@ -1652,13 +1750,20 @@ class LatentDiffusion(DDPM):
         lr = self.learning_rate
         if self.train_cond_stage_only:
             print(f"{self.__class__.__name__}: Only optimizing conditioner params!")
-            cond_parms = [p for n, p in self.named_parameters() 
-                    if 'attn2' in n or 'time_embed_condtion' in n or 'norm2' in n]
-            # cond_parms = [p for n, p in self.named_parameters() 
-                    # if 'time_embed_condtion' in n]
-            # cond_parms = []
-            
-            params = list(self.cond_stage_model.parameters()) + cond_parms
+            if getattr(self, 'visual_eeg_projector_only', False):
+                params = self.apply_visual_eeg_projector_only_freeze()
+                print(f"{self.__class__.__name__}: VisualEEG projector-only params: {sum(p.numel() for p in params)}")
+            else:
+                cond_parms = [p for n, p in self.named_parameters() 
+                        if 'attn2' in n or 'time_embed_condtion' in n or 'norm2' in n]
+                # cond_parms = [p for n, p in self.named_parameters() 
+                        # if 'time_embed_condtion' in n]
+                # cond_parms = []
+
+                if hasattr(self.cond_stage_model, 'trainable_parameters'):
+                    params = list(self.cond_stage_model.trainable_parameters()) + cond_parms
+                else:
+                    params = list(self.cond_stage_model.parameters()) + cond_parms
         
             for p in params:
                 p.requires_grad = True
@@ -1752,7 +1857,7 @@ class EEGClassifier(pl.LightningModule):
         self.best_train_loss = float('inf')  # Track best training loss for checkpoint saving
         self.cond_stage_model = None
         self.validation_count = 0
-        
+
     def forward(self, x, c, label, image_raw, *args, **kwargs):
         # print(self.num_timesteps)
         # t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()

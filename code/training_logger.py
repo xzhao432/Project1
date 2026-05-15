@@ -91,6 +91,16 @@ class DetailedTrainingLogger(Callback):
             metrics_str = ", ".join(train_metrics)
             self.logger.info(f"Result <train>: [{metrics_str}]")
 
+        probe_metrics = []
+        for key, value in metrics.items():
+            if key.startswith('probe/'):
+                metric_name = key.replace('probe/', '')
+                probe_metrics.append(f"probe/{metric_name}: {value:.6f}")
+
+        if probe_metrics:
+            metrics_str = ", ".join(probe_metrics)
+            self.logger.info(f"Result <probe>: [{metrics_str}]")
+
     def on_validation_start(self, trainer, pl_module):
         if trainer.current_epoch > 0:  # Skip first validation (sanity check)
             self.logger.info("Start validation.")
