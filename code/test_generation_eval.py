@@ -301,11 +301,7 @@ class ClipImageSimilarity:
 
 def summarize_metric_records(records):
     summary = {}
-    groups = {
-        "all": records,
-        "self_match": [r for r in records if r["self_match"]],
-        "non_self_match": [r for r in records if not r["self_match"]],
-    }
+    groups = {"all": records}
     variants = sorted({r["variant"] for r in records})
     metrics = ["ssim", "mse", "clip_similarity", "eval_pixcorr", "eval_ssim"]
 
@@ -539,8 +535,12 @@ def main():
     parser.add_argument("--num_items", type=int, default=10)
     parser.add_argument("--ddim_steps", type=int, default=50)
     parser.add_argument("--strengths", type=float, nargs="+", default=[0.7], help=argparse.SUPPRESS)
-    parser.add_argument("--candidate_strategy", choices=["top1", "self_if_available"], default="top1",
-                        help="top1 uses the nearest source candidate. self_if_available forces the target latent when it exists in the source gallery as a stronger oracle.")
+    parser.add_argument(
+        "--candidate_strategy",
+        choices=["top1", "self_if_available"],
+        default="top1",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--candidate_batch_size", type=int, default=256)
@@ -641,21 +641,7 @@ def main():
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=[
-                "row",
-                "eval_split",
-                "source_split",
-                "query_original_idx",
-                "top1_original_idx",
-                "top1_similarity",
-                "target_rank",
-                "target_similarity",
-                "candidate_strategy",
-                "source_original_idx",
-                "similarity",
-                "source_stem",
-                "self_match",
-            ],
+            fieldnames=["row", "eval_split", "query_original_idx"],
         )
         writer.writeheader()
 
@@ -663,35 +649,15 @@ def main():
             query_original_idx = int(query_h5["indices"][query_row])
             target_positions = np.flatnonzero(bank["indices"] == query_original_idx)
             target_bank_pos = int(target_positions[0]) if len(target_positions) else None
-            target_similarity = None
-            target_rank = None
-            if target_bank_pos is not None:
-                target_similarity = float(sim[i, target_bank_pos].item())
-                target_rank = int((sim[i] > target_similarity).sum().item()) + 1
 
             selected_bank_pos = top1_bank_pos
             if args.candidate_strategy == "self_if_available" and target_bank_pos is not None:
                 selected_bank_pos = target_bank_pos
 
-            top1_original_idx = int(bank["indices"][top1_bank_pos])
-            top1_similarity = float(sim[i, top1_bank_pos].item())
-            source_original_idx = int(bank["indices"][selected_bank_pos])
-            selected_similarity = float(sim[i, selected_bank_pos].item())
-            self_match = query_original_idx == source_original_idx
             writer.writerow({
                 "row": i,
                 "eval_split": args.eval_split,
-                "source_split": args.source_split,
                 "query_original_idx": query_original_idx,
-                "top1_original_idx": top1_original_idx,
-                "top1_similarity": top1_similarity,
-                "target_rank": target_rank,
-                "target_similarity": target_similarity,
-                "candidate_strategy": args.candidate_strategy,
-                "source_original_idx": source_original_idx,
-                "similarity": selected_similarity,
-                "source_stem": bank["stems"][selected_bank_pos],
-                "self_match": self_match,
             })
 
             if args.skip_generation:
@@ -722,8 +688,6 @@ def main():
                     metric_records.append({
                         "row": i,
                         "query_original_idx": query_original_idx,
-                        "source_original_idx": source_original_idx,
-                        "self_match": self_match,
                         "variant": variant_name,
                         "ssim": compute_ssim(gt_uint8, pred_uint8),
                         "mse": compute_mse(gt_uint8, pred_uint8),

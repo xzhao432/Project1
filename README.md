@@ -6,18 +6,13 @@ https://swanlab.cn/@yliu886/DSAA2012/runs/tr13g3gypvjpw7i9j80v6/chart
 
 This repository contains the evaluation entrypoint used for the visual200 EEG-to-image generation experiment.
 
-## Environment
-
-```bash
-cd /DreamDiffusion
-```
 
 ## Run Evaluation
 
 Run the 10-seed visual200 evaluation:
 
 ```bash
-GPU_ID=2 bash run_generation_eval_seeds_2025_2034.sh
+GPU_ID=0 bash run_generation_eval_seeds_2025_2034.sh
 ```
 
 The script evaluates seeds:
@@ -26,7 +21,7 @@ The script evaluates seeds:
 2025 2026 2027 2028 2029 2030 2031 2032 2033 2034
 ```
 
-Default local checkpoint path:
+The checkpoint is not tracked in this repository. Place it at:
 
 ```text
 /DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth
@@ -67,7 +62,6 @@ CUDA_VISIBLE_DEVICES=2 python code/test_generation_eval.py \
   --output_dir /DreamDiffusion/outputs/generation_visual200_seed2025 \
   --eval_split visual_test200 \
   --source_split visual_test200 \
-  --candidate_strategy top1 \
   --checkpoint_path /DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth \
   --num_items 200 \
   --ddim_steps 50 \

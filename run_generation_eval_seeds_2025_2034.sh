@@ -21,7 +21,6 @@ for SEED in "${SEEDS[@]}"; do
     --output_dir "${OUT_DIR}" \
     --eval_split visual_test200 \
     --source_split visual_test200 \
-    --candidate_strategy top1 \
     --checkpoint_path /home/yiqiuliu/DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth \
     --num_items 200 \
     --ddim_steps 50 \
