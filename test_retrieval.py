@@ -72,6 +72,14 @@ def load_eeg_split(data_dir: Path, split: str) -> tuple[np.ndarray, list[str]]:
     return eeg[:, selected_idx, :], ids
 
 
+def load_eeg_pt(test_pt_path: Path) -> tuple[np.ndarray, list[str]]:
+    pt = torch.load(test_pt_path, map_location='cpu', weights_only=False)
+    eeg = _avg_eeg(pt['eeg'])
+    ids = _to_image_ids(pt['img'])
+    selected_idx = [ALL_CHANNELS.index(ch) for ch in VISUAL_CHANNELS]
+    return eeg[:, selected_idx, :], ids
+
+
 def _resolve_feature_path(feature_path: Path, split: str) -> Path:
     expected_name = f'MultiBlur_RN50_{split}.pt'
     if feature_path.name in {'MultiBlur_RN50_train.pt', 'MultiBlur_RN50_test.pt'}:
@@ -142,23 +150,32 @@ def write_rankings(out_path: Path, ids: list[str], sim: torch.Tensor, k: int) ->
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--data-dir', type=Path, default=Path('/home/yiqiuliu/DL_Project/image-eeg-data'))
-    ap.add_argument('--clip-features', type=Path, default=Path('/home/yiqiuliu/VisualEEGDecoding/data/things-eeg/Image_feature/MultiBlur_RN50_test.pt'))
-    ap.add_argument('--checkpoint', type=Path, required=True)
-    ap.add_argument('--out-dir', type=Path, default=Path('./outputs/retrieval_inference'))
-    ap.add_argument('--split', choices=['train', 'test'], default='test')
-    ap.add_argument('--batch-size', type=int, default=512)
-    ap.add_argument('--top-k', type=int, default=5)
+    ap.add_argument('--output_dir', type=Path, default=Path('./outputs/evaluation'))
+    ap.add_argument('--test_pt_path', type=Path, default=None)
+    ap.add_argument('--image_root', type=Path, default=Path('/home/yiqiuliu/DL_Project/image-eeg-data'))
+    ap.add_argument('--checkpoint_path', type=Path, required=True)
     ap.add_argument('--seed', type=int, default=2025)
+    ap.add_argument('--compute_metrics', type=str, default='true')
+    ap.add_argument('--data-dir', dest='data_dir', type=Path, default=None, help=argparse.SUPPRESS)
+    ap.add_argument('--clip-features', dest='clip_features', type=Path, default=Path('/home/yiqiuliu/VisualEEGDecoding/data/things-eeg/Image_feature/MultiBlur_RN50_test.pt'), help=argparse.SUPPRESS)
+    ap.add_argument('--checkpoint', dest='checkpoint_path', type=Path, help=argparse.SUPPRESS)
+    ap.add_argument('--out-dir', dest='output_dir', type=Path, help=argparse.SUPPRESS)
+    ap.add_argument('--split', choices=['train', 'test'], default='test', help=argparse.SUPPRESS)
+    ap.add_argument('--batch-size', type=int, default=512, help=argparse.SUPPRESS)
+    ap.add_argument('--top-k', type=int, default=5, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     set_seed(args.seed)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    eeg, ids = load_eeg_split(args.data_dir, args.split)
+    if args.test_pt_path is not None:
+        eeg, ids = load_eeg_pt(args.test_pt_path)
+    else:
+        data_dir = args.data_dir or Path('/home/yiqiuliu/DL_Project/image-eeg-data')
+        eeg, ids = load_eeg_split(data_dir, args.split)
     clip_feats, id_to_idx = load_multiblur_features(args.clip_features, args.split)
-    model = load_encoder(eeg.shape[1], clip_feats.shape[-1], eeg.shape[2], args.checkpoint, device)
+    model = load_encoder(eeg.shape[1], clip_feats.shape[-1], eeg.shape[2], args.checkpoint_path, device)
 
     loader = DataLoader(PairDataset(eeg, ids, clip_feats, id_to_idx), batch_size=args.batch_size, shuffle=False)
     ids, eeg_features, img_features = encode_split(model, loader, device)
@@ -182,15 +199,16 @@ def main() -> None:
         'median_rank': float(ranks.median().item()),
     }
 
-    feature_path = args.out_dir / f'features_{args.split}.pt'
+    feature_path = args.output_dir / f'features_{args.split}.pt'
     torch.save({
         'ids': ids,
         'eeg_output': {key: eeg_features[i] for i, key in enumerate(ids)},
         'img_output': {key: img_features[i] for i, key in enumerate(ids)},
     }, feature_path)
-    write_rankings(args.out_dir / f'rankings_{args.split}.csv', ids, sim, args.top_k)
-    with (args.out_dir / f'metrics_{args.split}.json').open('w', encoding='utf-8') as f:
-        json.dump(metrics, f, indent=2)
+    write_rankings(args.output_dir / f'rankings_{args.split}.csv', ids, sim, args.top_k)
+    if str(args.compute_metrics).lower() in {'1', 'true', 'yes', 'y'}:
+        with (args.output_dir / f'metrics_{args.split}.json').open('w', encoding='utf-8') as f:
+            json.dump(metrics, f, indent=2)
 
     print(f'[done] wrote {feature_path}')
     print(f'[done] top1={top1:.4f}, top3={top3:.4f}, top5={top5:.4f}, mean_rank={metrics["mean_rank"]:.2f}')
