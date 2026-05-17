@@ -1,6 +1,6 @@
 # DreamDiffusion Evaluation
 
-<span style="color:red"><strong>Warning:</strong> this repository is not directly runnable because we did not submit the checkpoint through GitHub, SwanLab, or any other channel.</span>
+**Warning: this repository is not directly runnable because we did not submit the checkpoint through GitHub, SwanLab, or any other channel.**
 
 Experiment log is available at:
 
@@ -61,7 +61,7 @@ Eval SSIM
 ## Single-Seed Command
 
 ```bash
-CUDA_VISIBLE_DEVICES=2 python code/test_generation_eval.py \
+python code/test_generation_eval.py \
   --output_dir /DreamDiffusion/outputs/generation_visual200_seed2025 \
   --test_pt_path /DreamDiffusion/data/test_dreamdiffusion.pt \
   --image_root /DreamDiffusion/data/images \
