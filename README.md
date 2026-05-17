@@ -1,13 +1,15 @@
 # DreamDiffusion Evaluation
 
+Checkpoint and experiment logs are available at:
+
+https://swanlab.cn/@yliu886/DSAA2012/runs/tr13g3gypvjpw7i9j80v6/chart
+
 This repository contains the evaluation entrypoint used for the visual200 EEG-to-image generation experiment.
 
 ## Environment
 
 ```bash
-cd /home/yiqiuliu/DreamDiffusion
-source /data/yiqiuliu/miniforge3/etc/profile.d/conda.sh
-conda activate dreamdiffusion
+cd /DreamDiffusion
 ```
 
 ## Run Evaluation
@@ -24,10 +26,10 @@ The script evaluates seeds:
 2025 2026 2027 2028 2029 2030 2031 2032 2033 2034
 ```
 
-Default checkpoint:
+Default local checkpoint path:
 
 ```text
-/home/yiqiuliu/DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth
+/DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth
 ```
 
 ## Outputs
@@ -35,22 +37,20 @@ Default checkpoint:
 Each seed writes to:
 
 ```text
-/home/yiqiuliu/DreamDiffusion/outputs/generation_visual200_strength0.7_seed<SEED>
+/DreamDiffusion/outputs/generation_visual200_seed<SEED>
 ```
 
 Each output directory contains:
 
 ```text
 generation_visual_test200_generation_summary.csv
-generation_visual_test200_generation_grid.png
 generation_visual_test200_generation_metrics_by_sample.csv
 generation_visual_test200_generation_metrics_summary.json
-run.log
 ```
 
 ## Metrics
 
-The evaluation records:
+The evaluation records generated-image metrics:
 
 ```text
 SSIM
@@ -64,23 +64,13 @@ Eval SSIM
 
 ```bash
 CUDA_VISIBLE_DEVICES=2 python code/test_generation_eval.py \
-  --output_dir /home/yiqiuliu/DreamDiffusion/outputs/generation_visual200_strength0.7_seed2025 \
+  --output_dir /DreamDiffusion/outputs/generation_visual200_seed2025 \
   --eval_split visual_test200 \
   --source_split visual_test200 \
   --candidate_strategy top1 \
-  --checkpoint_path /home/yiqiuliu/DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth \
+  --checkpoint_path /DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth \
   --num_items 200 \
   --ddim_steps 50 \
-  --strengths 0.7 \
   --seed 2025 \
   --compute_metrics true
-```
-
-## Optional: Recompute Metrics From a Grid
-
-```bash
-python code/evaluate_generation_grid.py \
-  --grid_path /path/to/generation_visual_test200_generation_grid.png \
-  --summary_path /path/to/generation_visual_test200_generation_summary.csv \
-  --strengths 0.7
 ```

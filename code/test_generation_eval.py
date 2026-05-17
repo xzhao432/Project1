@@ -14,7 +14,6 @@ from einops import rearrange
 from PIL import Image
 from skimage.metrics import structural_similarity
 import torchvision.transforms as transforms
-from torchvision.utils import make_grid
 
 from config import Config_Generative_Model as ConfigClass
 from dc_ldm.ldm_for_eeg import eLDM
@@ -513,12 +512,6 @@ def ddim_latent_refinement(model, sampler, init_latent, cond, strength, ddim_ste
     return samples
 
 
-def save_grid(path, rows, nrow):
-    grid = make_grid(torch.cat(rows, dim=0), nrow=nrow)
-    array = (255.0 * rearrange(grid, "c h w -> h w c").cpu().numpy()).astype(np.uint8)
-    Image.fromarray(array).save(path)
-
-
 def parse_bool(value):
     if isinstance(value, bool):
         return value
@@ -545,7 +538,7 @@ def main():
     parser.add_argument("--encoder_checkpoint_path", type=str, default=str(DEFAULT_ENCODER_CHECKPOINT))
     parser.add_argument("--num_items", type=int, default=10)
     parser.add_argument("--ddim_steps", type=int, default=50)
-    parser.add_argument("--strengths", type=float, nargs="+", default=[0.3, 0.5, 0.7])
+    parser.add_argument("--strengths", type=float, nargs="+", default=[0.7], help=argparse.SUPPRESS)
     parser.add_argument("--candidate_strategy", choices=["top1", "self_if_available"], default="top1",
                         help="top1 uses the nearest source candidate. self_if_available forces the target latent when it exists in the source gallery as a stronger oracle.")
     parser.add_argument("--seed", type=int, default=2026)
@@ -640,7 +633,6 @@ def main():
                 batch_size=args.vae_encode_batch_size,
             )
 
-    rows = []
     metric_records = []
     gt_metric_images = []
     variant_metric_images = {}
@@ -711,31 +703,28 @@ def main():
             noise = torch.randn_like(init_latent)
 
             gt_img = decode_latent(model, gt_latent).cpu()
-            source_img = decode_latent(model, init_latent).cpu()
-            variants = [("source", None, source_img)]
-            for strength in args.strengths:
+            variants = []
+            for idx, strength in enumerate(args.strengths):
                 sample = ddim_latent_refinement(model, sampler, init_latent, cond, strength, args.ddim_steps, noise)
-                variants.append((f"strength_{strength:g}", strength, decode_latent(model, sample).cpu()))
-            row_imgs = [gt_img] + [img for _, _, img in variants]
-            rows.append(torch.cat(row_imgs, dim=0))
+                variant_name = "generated" if idx == 0 else f"generated_{idx + 1}"
+                variants.append((variant_name, decode_latent(model, sample).cpu()))
 
             if args.compute_metrics or args.compute_official_metrics:
                 gt_metric_images.append(gt_img)
-                for variant_name, _, pred_img in variants:
+                for variant_name, pred_img in variants:
                     variant_metric_images.setdefault(variant_name, []).append(pred_img)
 
             if args.compute_metrics:
                 gt_uint8 = tensor_to_uint8_hwc(gt_img)
-                pred_uint8_list = [tensor_to_uint8_hwc(img) for _, _, img in variants]
+                pred_uint8_list = [tensor_to_uint8_hwc(img) for _, img in variants]
                 clip_scores = clip_metric.score_against_gt(gt_uint8, pred_uint8_list)
-                for (variant_name, strength, pred_img), pred_uint8, clip_score in zip(variants, pred_uint8_list, clip_scores):
+                for (variant_name, pred_img), pred_uint8, clip_score in zip(variants, pred_uint8_list, clip_scores):
                     metric_records.append({
                         "row": i,
                         "query_original_idx": query_original_idx,
                         "source_original_idx": source_original_idx,
                         "self_match": self_match,
                         "variant": variant_name,
-                        "strength": strength,
                         "ssim": compute_ssim(gt_uint8, pred_uint8),
                         "mse": compute_mse(gt_uint8, pred_uint8),
                         "clip_similarity": clip_score,
@@ -743,11 +732,6 @@ def main():
                         "eval_ssim": compute_eval_ssim(gt_img, pred_img),
                     })
 
-    if rows:
-        nrow = 2 + len(args.strengths)
-        grid_path = Path(args.output_dir) / f"generation_{run_name}_grid.png"
-        save_grid(grid_path, rows, nrow=nrow)
-        print(f"[done] wrote {grid_path}")
     if metric_records:
         metrics_csv_path = Path(args.output_dir) / f"generation_{run_name}_metrics_by_sample.csv"
         with metrics_csv_path.open("w", newline="", encoding="utf-8") as f:
