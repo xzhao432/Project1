@@ -1,10 +1,13 @@
 # DreamDiffusion Evaluation
 
-Checkpoint and experiment logs are available at:
+<span style="color:red"><strong>Warning:</strong> this repository is not directly runnable because we did not submit the checkpoint through GitHub, SwanLab, or any other channel.</span>
+
+Experiment log is available at:
 
 https://swanlab.cn/@yliu886/DSAA2012/runs/tr13g3gypvjpw7i9j80v6/chart
 
 This repository contains the evaluation entrypoint used for the visual200 EEG-to-image generation experiment.
+
 
 
 ## Run Evaluation
@@ -21,7 +24,7 @@ The script evaluates seeds:
 2025 2026 2027 2028 2029 2030 2031 2032 2033 2034
 ```
 
-The checkpoint is not tracked in this repository. Place it at:
+If you have the checkpoint locally, place it at:
 
 ```text
 /DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth
@@ -60,11 +63,9 @@ Eval SSIM
 ```bash
 CUDA_VISIBLE_DEVICES=2 python code/test_generation_eval.py \
   --output_dir /DreamDiffusion/outputs/generation_visual200_seed2025 \
-  --eval_split visual_test200 \
-  --source_split visual_test200 \
+  --test_pt_path /DreamDiffusion/data/test_dreamdiffusion.pt \
+  --image_root /DreamDiffusion/data/images \
   --checkpoint_path /DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth \
-  --num_items 200 \
-  --ddim_steps 50 \
   --seed 2025 \
   --compute_metrics true
 ```

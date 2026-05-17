@@ -521,19 +521,16 @@ def main():
     parser.add_argument("--pretrain_mbm_path", type=str, default="/home/yiqiuliu/DreamDiffusion_old/pretrains/models/eeg_pretrain_scp/checkpoint.pth")
     parser.add_argument("--pretrain_gm_path", type=str, default="/home/yiqiuliu/DreamDiffusion_old/pretrains")
     parser.add_argument("--gallery_eeg_path", type=str, default="/home/yiqiuliu/DL_Project/image-eeg-data/train_dreamdiffusion.pt")
-    parser.add_argument("--source_split", choices=["train", "test", "visual_test200"], default="test",
-                        help="Image/latent gallery used as the initialization source. Use train for fair generation; test is the DreamDiffusion validation split oracle.")
-    parser.add_argument("--eval_split", choices=["train", "test", "visual_test200"], default="test",
-                        help="EEG split used as query. Here test means DreamDiffusion validation, not VisualEEG's 200-image test.")
+    parser.add_argument("--source_split", choices=["train", "test", "visual_test200"], default="visual_test200", help=argparse.SUPPRESS)
+    parser.add_argument("--eval_split", choices=["train", "test", "visual_test200"], default="visual_test200", help=argparse.SUPPRESS)
     parser.add_argument("--source_h5", type=str, default=None)
     parser.add_argument("--eval_h5", type=str, default=None)
     parser.add_argument("--source_image_features", type=str, default=None)
-    parser.add_argument("--visual_test_path", type=str, default=None,
-                        help="Path to VisualEEG 200-image test_dreamdiffusion.pt.")
-    parser.add_argument("--visual_test_image_root", type=str, default=None)
+    parser.add_argument("--test_pt_path", type=str, default=None, help="Path to the visual200 test .pt file.")
+    parser.add_argument("--image_root", type=str, default=None, help="Directory containing the visual200 image files.")
     parser.add_argument("--encoder_checkpoint_path", type=str, default=str(DEFAULT_ENCODER_CHECKPOINT))
-    parser.add_argument("--num_items", type=int, default=10)
-    parser.add_argument("--ddim_steps", type=int, default=50)
+    parser.add_argument("--num_items", type=int, default=200, help=argparse.SUPPRESS)
+    parser.add_argument("--ddim_steps", type=int, default=50, help=argparse.SUPPRESS)
     parser.add_argument("--strengths", type=float, nargs="+", default=[0.7], help=argparse.SUPPRESS)
     parser.add_argument(
         "--candidate_strategy",
@@ -543,7 +540,7 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--candidate_batch_size", type=int, default=256)
+    parser.add_argument("--candidate_batch_size", type=int, default=256, help=argparse.SUPPRESS)
     parser.add_argument("--vae_encode_batch_size", type=int, default=8)
     parser.add_argument("--compute_metrics", type=parse_bool, default=True,
                         help="Compute SSIM, MSE, and CLIP image similarity for source/generated images.")
@@ -556,7 +553,7 @@ def main():
     parser.add_argument("--max_source_items", type=int, default=None,
                         help="Optional smoke-test limit for the source gallery. Leave unset for real experiments.")
     parser.add_argument("--skip_generation", type=parse_bool, default=False,
-                        help="Only write source-candidate CSV; do not load LDM or sample images.")
+                        help="Only write the summary CSV; do not load LDM or sample images.")
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
@@ -573,14 +570,14 @@ def main():
     bank_h5 = load_split_data(
         args.source_split,
         h5_override=bank_h5_path if args.source_h5 else None,
-        pt_override=args.visual_test_path,
-        image_root_override=args.visual_test_image_root,
+        pt_override=args.test_pt_path,
+        image_root_override=args.image_root,
     )
     query_h5 = load_split_data(
         args.eval_split,
         h5_override=query_h5_path if args.eval_h5 else None,
-        pt_override=args.visual_test_path,
-        image_root_override=args.visual_test_image_root,
+        pt_override=args.test_pt_path,
+        image_root_override=args.image_root,
     )
     if args.eval_split == "visual_test200" or args.source_split == "visual_test200":
         gallery_data = bank_h5["dataset"] if args.source_split == "visual_test200" else query_h5["dataset"]

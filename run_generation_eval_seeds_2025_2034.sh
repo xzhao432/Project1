@@ -19,11 +19,9 @@ for SEED in "${SEEDS[@]}"; do
 
   CUDA_VISIBLE_DEVICES="${GPU_ID}" python code/test_generation_eval.py \
     --output_dir "${OUT_DIR}" \
-    --eval_split visual_test200 \
-    --source_split visual_test200 \
+    --test_pt_path /home/yiqiuliu/DL_Project/image-eeg-data/test_dreamdiffusion.pt \
+    --image_root /home/yiqiuliu/DL_Project/image-eeg-data \
     --checkpoint_path /home/yiqiuliu/DreamDiffusion/dreamdiffusion/results/generation/15-05-2026-14-47-42/checkpoint_epoch6.pth \
-    --num_items 200 \
-    --ddim_steps 50 \
     --seed "${SEED}" \
     --compute_metrics true
 done
